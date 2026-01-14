@@ -291,3 +291,4 @@ class ESC {
       adcDataAvailable = true;
     }
 };
+
