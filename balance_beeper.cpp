@@ -5,6 +5,7 @@
 #define PLAY_STARTUP true
 #define DUTY_CYCLE_ALERT 0.75 // 0 to disable
 #define LOW_VOLTAGE 58.9 // 0 to disable
+#define FULL_VOLTAGE 79.8 // Voltage of battery when fully charged
 #define LOW_VOLTAGE_INTERVAL 5 * 1000 // every 30 seconds
 
 class BalanceBeeper {
