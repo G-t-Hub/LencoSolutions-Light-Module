@@ -37,6 +37,7 @@
 #define FOOTPAD_INDICATOR_LED_BLUE 255
 
 #define BATTERY_INDICATOR_DURATION 5000 // 5 seconds
+#define STARTUP_ANIMATION_DURATION 5000 // 5 seconds
 
 #define THRESHOLD 5000
 #define FAST_DELAY 20
@@ -91,7 +92,6 @@ bool isInitialStartup = true;
 // Startup Animation variables
 unsigned long startupBeginMS = 0;
 bool startupAnimationComplete = false;
-const unsigned long STARTUP_ANIMATION_DURATION = 5000; // 5 seconds
 
 int currentLEDIndex = 0;
 int direction = FORWARD;
