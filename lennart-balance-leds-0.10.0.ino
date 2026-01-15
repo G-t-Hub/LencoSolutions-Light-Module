@@ -129,14 +129,11 @@ void setup() {
 
   startupBeginMS = millis();
 
-
-  startupBeginMS = millis();
-
   FastLED.show();
 }
 
 void loop() {
-    
+  
   // Passive listenin for status 6;
   esc.listenForMessages();
 
@@ -163,13 +160,11 @@ void loop() {
     movingState = true;
     direction = FORWARD;
     FastLED.setBrightness(NORMAL_BRIGHTNESS);
-    //esc.setBatteryCurrentLimit(10.0);
   } else if (globalErpm < -200) {
     startupState = false;
     movingState = true;
     direction = REVERSE;
     FastLED.setBrightness(NORMAL_BRIGHTNESS);
-    //esc.setBatteryCurrentLimit(5.0);
   } else {
     if (movingState && !startupState)
     {
