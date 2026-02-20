@@ -7,34 +7,43 @@
 #include "esc.cpp"   // includes your updated ESC class
 
 // Front LEDs (U1)
-#define FLASHING_LED_RED 228
-#define FLASHING_LED_GREEN 158
-#define FLASHING_LED_BLUE 0
+#define FORWARD_LED_RED 228
+#define FORWARD_LED_GREEN 158
+#define FORWARD_LED_BLUE 0
 
 // Rear LEDs (U2)
-#define CONSTANT_LED_RED 255
-#define CONSTANT_LED_GREEN 0
-#define CONSTANT_LED_BLUE 0
+#define REVERSE_LED_RED 255
+#define REVERSE_LED_GREEN 0
+#define REVERSE_LED_BLUE 0
  
-// The color of the LEDs for startup animation
+// Footpad: The color of the LEDs for startup animation (U3)
 #define STARTUP_ANIMATION_LED_RED 50
 #define STARTUP_ANIMATION_LED_GREEN 205
 #define STARTUP_ANIMATION_LED_BLUE 50
-
-// The color of the LEDs showing the battery percent
+// Footpad: The color of the LEDs showing the battery percent (U3)
 #define BATTERY_INDICATOR_LED_RED 0
 #define BATTERY_INDICATOR_LED_GREEN 255
 #define BATTERY_INDICATOR_LED_BLUE 0
-
-// After battery Percent LEDs above, color of the remaining LEDs in the bar
+// Footpad: After battery Percent LEDs above, color of the remaining LEDs in the bar (U3)
 #define BATTERY_INDICATOR_ALTERNATE_LED_RED 0
 #define BATTERY_INDICATOR_ALTERNATE_LED_GREEN 0
 #define BATTERY_INDICATOR_ALTERNATE_LED_BLUE 255
-
-// When a single footpad is pressed, what color should it light up
+// Footpad: When a single footpad is pressed, what color should it light up (U3)
 #define FOOTPAD_INDICATOR_LED_RED 0
 #define FOOTPAD_INDICATOR_LED_GREEN 0
 #define FOOTPAD_INDICATOR_LED_BLUE 255
+// Footpad: Stationary knightrider color (U3)
+#define FOOTPAD_KNIGHTRIDER_LED_RED 0
+#define FOOTPAD_KNIGHTRIDER_LED_GREEN 0
+#define FOOTPAD_KNIGHTRIDER_LED_BLUE 255
+// Footpad: Duty cycle indicator color (moving state) (U3)
+#define DUTY_INDICATOR_LED_RED 0
+#define DUTY_INDICATOR_LED_GREEN 255
+#define DUTY_INDICATOR_LED_BLUE 0
+// Footpad: Duty cycle high (above 80%) warning color (U3)
+#define DUTY_INDICATOR_HIGH_LED_RED 255
+#define DUTY_INDICATOR_HIGH_LED_GREEN 0
+#define DUTY_INDICATOR_HIGH_LED_BLUE 0
 
 #define BATTERY_INDICATOR_DURATION 5000 // 5 seconds
 #define STARTUP_ANIMATION_DURATION 5000 // 5 seconds
@@ -46,8 +55,12 @@
 #define NORMAL_BRIGHTNESS 255 
 
 #define NUM_LEDS 17 
-#define FORWARD_PIN 5
+#define NUM_LEDS_FOOTPAD 17 
+
+#define FORWARD_PIN A0
 #define REVERSE_PIN 6
+#define FOOTPAD_PIN 5
+
 #define FORWARD 0
 #define REVERSE 1
 
@@ -58,6 +71,7 @@
 
 CRGB forward_leds[NUM_LEDS];
 CRGB reverse_leds[NUM_LEDS];
+CRGB footpad_leds[NUM_LEDS_FOOTPAD];
 
 ESC esc;
 BalanceBeeper balanceBeeper;
@@ -98,12 +112,19 @@ int direction = FORWARD;
 int animationDirFlag = 1;
 int previousErpm = 0;
 
+// Footpad knight rider animation variables
+int footpadCurrentLEDIndex = 0;
+int footpadAnimationDirFlag = 1;
+unsigned long lastFootpadKnightRiderUpdate = 0;
+
 bool startupState = true; 
 bool movingState = false; 
 bool isBraking = false;
 
 void knightRider(int red, int green, int blue, int ridingWidth);
 void checkBraking();
+void footpadKnightRider();
+void footpadDutyCycleIndicator();
 
 void setup() {
   // Serial.begin(115200);
@@ -114,6 +135,8 @@ void setup() {
       .setCorrection(TypicalLEDStrip);
   FastLED.addLeds<WS2812B, REVERSE_PIN, GRB>(reverse_leds, NUM_LEDS)
       .setCorrection(TypicalLEDStrip);
+  FastLED.addLeds<WS2812B, FOOTPAD_PIN, GRB>(footpad_leds, NUM_LEDS_FOOTPAD)
+      .setCorrection(TypicalLEDStrip);
 
   FastLED.setMaxPowerInVoltsAndMilliamps(5, 1500);
   FastLED.setBrightness(STARTUP_BRIGHTNESS);
@@ -121,9 +144,9 @@ void setup() {
 
   // Initial LED pattern
   for (int i = 0; i < NUM_LEDS; i++) {
-    forward_leds[i] = CRGB(FLASHING_LED_RED, FLASHING_LED_GREEN, FLASHING_LED_BLUE);
+    forward_leds[i] = CRGB(FORWARD_LED_RED, FORWARD_LED_GREEN, FORWARD_LED_BLUE);
     reverse_leds[i] = (i % 2 == 0)
-        ? CRGB(CONSTANT_LED_RED, CONSTANT_LED_GREEN, CONSTANT_LED_BLUE)
+        ? CRGB(REVERSE_LED_RED, REVERSE_LED_GREEN, REVERSE_LED_BLUE)
         : CRGB(0, 0, 0);
   }
 
@@ -134,7 +157,7 @@ void setup() {
 
 void loop() {
   
-  // Passive listenin for status 6;
+  // Passive listening for status 6;
   esc.listenForMessages();
 
   // === Periodic CAN polling ===
@@ -179,7 +202,8 @@ void loop() {
   if (startupState) {
     processStartupAction();
   } else if (movingState) {
-    knightRider(FLASHING_LED_RED, FLASHING_LED_GREEN, FLASHING_LED_BLUE, 5);
+    knightRider(FORWARD_LED_RED, FORWARD_LED_GREEN, FORWARD_LED_BLUE, 5);
+    footpadDutyCycleIndicator(); //ASK
   }
 
   // === Brake logic ===
@@ -222,12 +246,12 @@ void checkBraking() {
   CRGB *leds_const = (direction == FORWARD) ? reverse_leds : forward_leds;
   if (isBraking) {
     for (int i = 0; i < NUM_LEDS; i++) {
-      leds_const[i].setRGB(CONSTANT_LED_RED, CONSTANT_LED_GREEN, CONSTANT_LED_BLUE);
+      leds_const[i].setRGB(REVERSE_LED_RED, REVERSE_LED_GREEN, REVERSE_LED_BLUE);
     }
   } else {
     for (int i = 0; i < NUM_LEDS; i++) {
       if (i % 2 == 0)
-        leds_const[i].setRGB(CONSTANT_LED_RED, CONSTANT_LED_GREEN, CONSTANT_LED_BLUE);
+        leds_const[i].setRGB(REVERSE_LED_RED, REVERSE_LED_GREEN, REVERSE_LED_BLUE);
       else
         leds_const[i] = CRGB(0, 0, 0);
     }
@@ -298,16 +322,21 @@ void knightRider(int red, int green, int blue, int ridingWidth) {
 }
 
 void processStartupAction() {
-   // Reset voltage acquired flag when returning to startup
+  // Reset voltage acquired flag when returning to startup
   if (returningToStartup) {
     voltageAcquired = false;
     returningToStartup = false;
   }
 
-  // Show startup loading animation if not complete
+  // === Forward/Reverse LEDs: Always show static pattern ===
+  staticStartupLEDs();
+
+  // === Footpad LEDs: Priority-based display ===
+  
+  // Priority 1: Startup animation (if not complete)
   if (!startupAnimationComplete) {
     startupAnimation();
-    return; // Don't proceed with other startup logic during animation
+    return;
   }
   
   // Acquire voltage and start timer when voltage becomes available
@@ -318,7 +347,7 @@ void processStartupAction() {
 
   // Check if both footpad sensors were triggered
   if (esc.adc1 > esc.footpadThreshold && esc.adc2 > esc.footpadThreshold) {
-    lastFootpadTriggerMillis = millis();
+    lastFootpadTriggerMillis = millis(); // ASK I think this should be renamed to lastBatteryFootpadTriggerMillis
     isInitialStartup = false;
   }
 
@@ -328,27 +357,23 @@ void processStartupAction() {
   }
 
   // Determine if we should show battery
-  // Only show battery if voltage is acquired AND within timer window
   bool showBatteryOnTimer = voltageAcquired && (millis() - voltageAcquiredMS <= BATTERY_INDICATOR_DURATION);
   bool showBatteryOnFootpad = voltageAcquired && (millis() - lastFootpadTriggerMillis <= BATTERY_INDICATOR_DURATION);
   
-  // Show battery only if voltage is acquired and within timer
-  if (showBatteryOnTimer) {
+  // Priority 2: Battery percent indicator
+  if (showBatteryOnTimer || showBatteryOnFootpad) {
     batteryPercentStartupLEDs();
   }
-  // Else if footpad was triggered recently
-  else if (showBatteryOnFootpad) {
-    batteryPercentStartupLEDs();
-  }
-  // Else show static or single footpad indicator
+  // Priority 3: Single footpad indicator
   else {
-    // Check if only one footpad is triggered 
     bool onlyOneFootpad = (esc.adc1 > esc.footpadThreshold) != (esc.adc2 > esc.footpadThreshold);
     
     if (onlyOneFootpad) {
       singleFootpadTriggeredStartupLEDs();
-    } else {
-      staticStartupLEDs();
+    } 
+    // Priority 4: Footpad knight rider (default fallback)
+    else {
+      footpadKnightRider(); //ASK
     }
   }
 } 
@@ -362,23 +387,16 @@ void startupAnimation() {
   }
   
   // Calculate how many LEDs should be lit based on progress
-  int numLeds = map(elapsed, 0, STARTUP_ANIMATION_DURATION, 0, NUM_LEDS);
-  numLeds = constrain(numLeds, 0, NUM_LEDS);
+  int numLeds = map(elapsed, 0, STARTUP_ANIMATION_DURATION, 0, NUM_LEDS_FOOTPAD);  //ASK
+  numLeds = constrain(numLeds, 0, NUM_LEDS_FOOTPAD);
   
-  // Light up forward LEDs progressively
-  for (int i = 0; i < NUM_LEDS; i++) {
+  // Light up footpad LEDs progressively
+  for (int i = 0; i < NUM_LEDS_FOOTPAD; i++) {
     if (i < numLeds) {
-      forward_leds[i] = CRGB(STARTUP_ANIMATION_LED_RED, STARTUP_ANIMATION_LED_GREEN, STARTUP_ANIMATION_LED_BLUE);
+      footpad_leds[i] = CRGB(STARTUP_ANIMATION_LED_RED, STARTUP_ANIMATION_LED_GREEN, STARTUP_ANIMATION_LED_BLUE);
     } else {
-      forward_leds[i] = CRGB(0, 0, 0);
+      footpad_leds[i] = CRGB(0, 0, 0);
     }
-  }
-  
-  // Keep reverse LEDs in default pattern
-  for (int i = 0; i < NUM_LEDS; i++) {
-    reverse_leds[i] = (i % 2 == 0)
-        ? CRGB(CONSTANT_LED_RED, CONSTANT_LED_GREEN, CONSTANT_LED_BLUE)
-        : CRGB(0, 0, 0);
   }
 }
 
@@ -386,40 +404,32 @@ void staticStartupLEDs() {
      // Static startup LEDs
   for (int i = 0; i < NUM_LEDS; i++) {
     if (direction == FORWARD) {
-      forward_leds[i] = CRGB(FLASHING_LED_RED, FLASHING_LED_GREEN, FLASHING_LED_BLUE);
+      forward_leds[i] = CRGB(FORWARD_LED_RED, FORWARD_LED_GREEN, FORWARD_LED_BLUE);
       reverse_leds[i] = (i % 2 == 0)
-          ? CRGB(CONSTANT_LED_RED, CONSTANT_LED_GREEN, CONSTANT_LED_BLUE)
+          ? CRGB(REVERSE_LED_RED, REVERSE_LED_GREEN, REVERSE_LED_BLUE)
           : CRGB(0, 0, 0);
-    } else {
-      reverse_leds[i] = CRGB(FLASHING_LED_RED, FLASHING_LED_GREEN, FLASHING_LED_BLUE);
+    } else { 
+      reverse_leds[i] = CRGB(FORWARD_LED_RED, FORWARD_LED_GREEN, FORWARD_LED_BLUE); //swapped due to inverse direction
       forward_leds[i] = (i % 2 == 0)
-          ? CRGB(CONSTANT_LED_RED, CONSTANT_LED_GREEN, CONSTANT_LED_BLUE)
+          ? CRGB(REVERSE_LED_RED, REVERSE_LED_GREEN, REVERSE_LED_BLUE)
           : CRGB(0, 0, 0);
     }
   }
 }
 
 void batteryPercentStartupLEDs() {
-
-    if (!isInitialStartup) {
-    // Only check footpads after initial startup (when triggered by footpad press)
-    if (esc.adc1 < esc.footpadThreshold || esc.adc2 < esc.footpadThreshold) {
-      return;
-    }
-  }
-
   // Get battery voltage
   double batteryVoltage = globalVoltage;
 
   // calculate the battery voltage to be a percentage of the difference between full voltage and low voltage
   double batteryVoltagePercentage = (batteryVoltage - LOW_VOLTAGE) / (FULL_VOLTAGE - LOW_VOLTAGE);
 
-  //light up one led for each 10% of the battery voltage remaining and turn off the rest
-  for (int i = 0; i < NUM_LEDS; i++) {
-    if (i < batteryVoltagePercentage*NUM_LEDS) {
-      forward_leds[i].setRGB(BATTERY_INDICATOR_LED_RED, BATTERY_INDICATOR_LED_GREEN, BATTERY_INDICATOR_LED_BLUE);
+  // Light up footpad LEDs based on battery percentage
+  for (int i = 0; i < NUM_LEDS_FOOTPAD; i++) {
+    if (i < batteryVoltagePercentage * NUM_LEDS_FOOTPAD) {
+      footpad_leds[i].setRGB(BATTERY_INDICATOR_LED_RED, BATTERY_INDICATOR_LED_GREEN, BATTERY_INDICATOR_LED_BLUE);
     } else {
-      forward_leds[i].setRGB(BATTERY_INDICATOR_ALTERNATE_LED_RED, BATTERY_INDICATOR_ALTERNATE_LED_GREEN, BATTERY_INDICATOR_ALTERNATE_LED_BLUE);
+      footpad_leds[i].setRGB(BATTERY_INDICATOR_ALTERNATE_LED_RED, BATTERY_INDICATOR_ALTERNATE_LED_GREEN, BATTERY_INDICATOR_ALTERNATE_LED_BLUE);
     }
   }
 }
@@ -428,13 +438,13 @@ void singleFootpadTriggeredStartupLEDs() {
   
   if (esc.adc1 > esc.footpadThreshold)
   {
-    for (int i = 0; i < NUM_LEDS; i++)
+    for (int i = 0; i < NUM_LEDS_FOOTPAD; i++)
     {
-      if (i < NUM_LEDS/2){
-        forward_leds[i].setRGB(FOOTPAD_INDICATOR_LED_RED, FOOTPAD_INDICATOR_LED_GREEN, FOOTPAD_INDICATOR_LED_BLUE);
+      if (i < NUM_LEDS_FOOTPAD/2){
+        footpad_leds[i].setRGB(FOOTPAD_INDICATOR_LED_RED, FOOTPAD_INDICATOR_LED_GREEN, FOOTPAD_INDICATOR_LED_BLUE);
       }
       else {
-        forward_leds[i].setRGB(0, 0, 0);
+        footpad_leds[i].setRGB(0, 0, 0);
       }
       
     }
@@ -442,14 +452,80 @@ void singleFootpadTriggeredStartupLEDs() {
   else
   if (esc.adc2 > esc.footpadThreshold)
   {
-    for (int i = 0; i < NUM_LEDS; i++)
+    for (int i = 0; i < NUM_LEDS_FOOTPAD; i++)
     {
-      if (i > NUM_LEDS/2){
-        forward_leds[i].setRGB(FOOTPAD_INDICATOR_LED_RED, FOOTPAD_INDICATOR_LED_GREEN, FOOTPAD_INDICATOR_LED_BLUE);
+      if (i > NUM_LEDS_FOOTPAD/2){
+        footpad_leds[i].setRGB(FOOTPAD_INDICATOR_LED_RED, FOOTPAD_INDICATOR_LED_GREEN, FOOTPAD_INDICATOR_LED_BLUE);
       }
       else {
-        forward_leds[i].setRGB(0, 0, 0);
+        footpad_leds[i].setRGB(0, 0, 0);
       }
+    }
+  }
+}
+
+void footpadKnightRider() {
+  const int ridingWidth = 5;
+  const unsigned long animationDelay = 50; // Fixed speed for idle animation
+
+  if (millis() - lastFootpadKnightRiderUpdate >= animationDelay) {
+
+    for (int i = 0; i < NUM_LEDS_FOOTPAD; i++) {
+      footpad_leds[i].fadeToBlackBy(60);
+    }
+
+    footpadCurrentLEDIndex = constrain(footpadCurrentLEDIndex, 0, NUM_LEDS_FOOTPAD - ridingWidth - 2);
+
+    for (int j = -2; j < ridingWidth + 2; j++) {
+      int idx = footpadCurrentLEDIndex + j;
+      if (idx >= 0 && idx < NUM_LEDS_FOOTPAD) {
+        int fadeFactor;
+        if (j < 0 || j >= ridingWidth) fadeFactor = 30;     
+        else fadeFactor = 100;                              
+      
+        footpad_leds[idx].setRGB(
+          (FOOTPAD_KNIGHTRIDER_LED_RED   * fadeFactor) / 100,
+          (FOOTPAD_KNIGHTRIDER_LED_GREEN * fadeFactor) / 100,
+          (FOOTPAD_KNIGHTRIDER_LED_BLUE  * fadeFactor) / 100
+        );
+      }
+    }
+  
+    footpadCurrentLEDIndex += footpadAnimationDirFlag;
+
+    if (footpadCurrentLEDIndex >= NUM_LEDS_FOOTPAD - ridingWidth - 2) {
+      footpadAnimationDirFlag = -1;
+    } else if (footpadCurrentLEDIndex <= 0) {
+      footpadAnimationDirFlag = 1;
+    }
+
+    lastFootpadKnightRiderUpdate = millis();
+  }
+}
+
+void footpadDutyCycleIndicator() {
+  // Normalize duty cycle to 0-100 range (duty cycle can be negative when braking)
+  double dutyAbs = abs(globalDutyCycle);
+  dutyAbs = constrain(dutyAbs, 0.0, 100.0);
+  
+  // Calculate how many LEDs to light based on duty cycle percentage
+  int numLedsToLight = (int)((dutyAbs / 100.0) * NUM_LEDS_FOOTPAD);
+  numLedsToLight = constrain(numLedsToLight, 0, NUM_LEDS_FOOTPAD);
+  
+  // Determine if we're in high duty (above 80%)
+  bool highDuty = (dutyAbs >= 80.0);
+  
+  for (int i = 0; i < NUM_LEDS_FOOTPAD; i++) {
+    if (i < numLedsToLight) {
+      if (highDuty) {
+        // Red for high duty cycle warning
+        footpad_leds[i].setRGB(DUTY_INDICATOR_HIGH_LED_RED, DUTY_INDICATOR_HIGH_LED_GREEN, DUTY_INDICATOR_HIGH_LED_BLUE);
+      } else {
+        // Normal color for duty cycle
+        footpad_leds[i].setRGB(DUTY_INDICATOR_LED_RED, DUTY_INDICATOR_LED_GREEN, DUTY_INDICATOR_LED_BLUE);
+      }
+    } else {
+      footpad_leds[i].setRGB(0, 0, 0);
     }
   }
 }
