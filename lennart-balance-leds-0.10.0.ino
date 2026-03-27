@@ -57,9 +57,9 @@
 #define NUM_LEDS 17 
 #define NUM_LEDS_FOOTPAD 17 
 
-#define FORWARD_PIN A0
+#define FORWARD_PIN 5
 #define REVERSE_PIN 6
-#define FOOTPAD_PIN 5
+#define FOOTPAD_PIN A0
 
 #define FORWARD 0
 #define REVERSE 1
