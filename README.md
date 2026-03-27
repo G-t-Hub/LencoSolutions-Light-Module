@@ -1,3 +1,5 @@
+# This branch was to test setting current limits temporarily to be able to limit the vesc via an external input. 
+
 # LencoSolutions light module info
 I started with the original ballance buddy project and added stuff like a brake function and knight rider animation.
 The code was also revised to make it non blocking and fast.
