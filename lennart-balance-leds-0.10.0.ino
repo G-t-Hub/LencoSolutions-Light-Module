@@ -428,6 +428,15 @@ void staticStartupLEDs() {
   }
 }
 
+void lowVoltageWarningLEDs() {
+  // Flash all footpad LEDs bright red when battery is at or below 10%.
+  // Faster than warningLEDs to convey urgency.
+  bool flashOn = (millis() / 250) % 2 == 0;
+  for (int i = 0; i < NUM_LEDS_FOOTPAD; i++) {
+    footpad_leds[i] = flashOn ? CRGB(255, 0, 0) : CRGB(0, 0, 0);
+  }
+}
+
 void warningLEDs() {
   // Flash all footpad LEDs orange to indicate no CAN connection or misconfigured voltage range.
   // On/off at 400ms intervals.
@@ -438,12 +447,20 @@ void warningLEDs() {
 }
 
 void batteryPercentStartupLEDs() {
-  if (globalVoltage < LOW_VOLTAGE - 2.0 || globalVoltage > FULL_VOLTAGE + 2.0) {
+  double batteryVoltagePercentage = (globalVoltage - LOW_VOLTAGE) / (FULL_VOLTAGE - LOW_VOLTAGE);
+
+  // Voltage is outside the expected range — likely misconfigured voltage constants
+  if (batteryVoltagePercentage < -0.10 || batteryVoltagePercentage > 1.10) {
     warningLEDs();
     return;
   }
 
-  double batteryVoltagePercentage = (globalVoltage - LOW_VOLTAGE) / (FULL_VOLTAGE - LOW_VOLTAGE);
+  // Battery critically low (≤ 10%)
+  if (batteryVoltagePercentage <= 0.10) {
+    lowVoltageWarningLEDs();
+    return;
+  }
+
   batteryVoltagePercentage = constrain(batteryVoltagePercentage, 0.0, 1.0);
 
   int r, g, b;
