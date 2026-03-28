@@ -351,7 +351,13 @@ void processStartupAction() {
     startupAnimation();
     return;
   }
-  
+
+  // Priority 2: Low voltage warning — overrides all idle animations
+  if (globalVoltage > 0.0 && (globalVoltage - LOW_VOLTAGE) / (FULL_VOLTAGE - LOW_VOLTAGE) <= 0.10) {
+    lowVoltageWarningLEDs();
+    return;
+  }
+
   // Acquire voltage and start timer when voltage becomes available
   if (!voltageAcquired && globalVoltage != 0.0) {
     voltageAcquired = true;
@@ -457,11 +463,7 @@ void batteryPercentStartupLEDs() {
     return;
   }
 
-  // Battery critically low (≤ 10%)
-  if (batteryVoltagePercentage <= 0.10) {
-    lowVoltageWarningLEDs();
-    return;
-  }
+  // Low voltage (≤ 10%) is handled as Priority 2 in processStartupAction before we get here.
 
   batteryVoltagePercentage = constrain(batteryVoltagePercentage, 0.0, 1.0);
 
