@@ -20,14 +20,19 @@
 #define STARTUP_ANIMATION_LED_RED 50
 #define STARTUP_ANIMATION_LED_GREEN 205
 #define STARTUP_ANIMATION_LED_BLUE 50
-// Footpad: The color of the LEDs showing the battery percent (U3)
-#define BATTERY_INDICATOR_LED_RED 0
-#define BATTERY_INDICATOR_LED_GREEN 255
-#define BATTERY_INDICATOR_LED_BLUE 0
-// Footpad: After battery Percent LEDs above, color of the remaining LEDs in the bar (U3)
-#define BATTERY_INDICATOR_ALTERNATE_LED_RED 0
-#define BATTERY_INDICATOR_ALTERNATE_LED_GREEN 0
-#define BATTERY_INDICATOR_ALTERNATE_LED_BLUE 255
+// Footpad: Battery percent indicator colors — tiered by charge level (U3)
+#define BATTERY_HIGH_LED_RED 0      // > 40%: green
+#define BATTERY_HIGH_LED_GREEN 255
+#define BATTERY_HIGH_LED_BLUE 0
+#define BATTERY_MID_LED_RED 255     // 20–40%: yellow
+#define BATTERY_MID_LED_GREEN 180
+#define BATTERY_MID_LED_BLUE 0
+#define BATTERY_LOW_LED_RED 255     // ≤ 20%: red
+#define BATTERY_LOW_LED_GREEN 0
+#define BATTERY_LOW_LED_BLUE 0
+#define BATTERY_EMPTY_LED_RED 0     // empty LEDs: dim blue
+#define BATTERY_EMPTY_LED_GREEN 0
+#define BATTERY_EMPTY_LED_BLUE 30
 // Footpad: When a single footpad is pressed, what color should it light up (U3)
 #define FOOTPAD_INDICATOR_LED_RED 0
 #define FOOTPAD_INDICATOR_LED_GREEN 0
@@ -332,7 +337,13 @@ void processStartupAction() {
   staticStartupLEDs();
 
   // === Footpad LEDs: Priority-based display ===
-  
+
+  // Priority 0: No CAN connection — voltage still 0 once startup animation has completed
+  if (startupAnimationComplete && globalVoltage == 0.0) {
+    warningLEDs();
+    return;
+  }
+
   // Priority 1: Startup animation (if not complete)
   if (!startupAnimationComplete) {
     startupAnimation();
@@ -417,19 +428,39 @@ void staticStartupLEDs() {
   }
 }
 
-void batteryPercentStartupLEDs() {
-  // Get battery voltage
-  double batteryVoltage = globalVoltage;
-
-  // calculate the battery voltage to be a percentage of the difference between full voltage and low voltage
-  double batteryVoltagePercentage = (batteryVoltage - LOW_VOLTAGE) / (FULL_VOLTAGE - LOW_VOLTAGE);
-
-  // Light up footpad LEDs based on battery percentage
+void warningLEDs() {
+  // Flash all footpad LEDs orange to indicate no CAN connection or misconfigured voltage range.
+  // On/off at 400ms intervals.
+  bool flashOn = (millis() / 400) % 2 == 0;
   for (int i = 0; i < NUM_LEDS_FOOTPAD; i++) {
-    if (i < batteryVoltagePercentage * NUM_LEDS_FOOTPAD) {
-      footpad_leds[i].setRGB(BATTERY_INDICATOR_LED_RED, BATTERY_INDICATOR_LED_GREEN, BATTERY_INDICATOR_LED_BLUE);
+    footpad_leds[i] = flashOn ? CRGB(255, 80, 0) : CRGB(0, 0, 0);
+  }
+}
+
+void batteryPercentStartupLEDs() {
+  if (globalVoltage < LOW_VOLTAGE - 2.0 || globalVoltage > FULL_VOLTAGE + 2.0) {
+    warningLEDs();
+    return;
+  }
+
+  double batteryVoltagePercentage = (globalVoltage - LOW_VOLTAGE) / (FULL_VOLTAGE - LOW_VOLTAGE);
+  batteryVoltagePercentage = constrain(batteryVoltagePercentage, 0.0, 1.0);
+
+  int r, g, b;
+  if (batteryVoltagePercentage <= 0.20) {
+    r = BATTERY_LOW_LED_RED;  g = BATTERY_LOW_LED_GREEN;  b = BATTERY_LOW_LED_BLUE;
+  } else if (batteryVoltagePercentage <= 0.40) {
+    r = BATTERY_MID_LED_RED;  g = BATTERY_MID_LED_GREEN;  b = BATTERY_MID_LED_BLUE;
+  } else {
+    r = BATTERY_HIGH_LED_RED; g = BATTERY_HIGH_LED_GREEN; b = BATTERY_HIGH_LED_BLUE;
+  }
+
+  int numLedsLit = (int)(batteryVoltagePercentage * NUM_LEDS_FOOTPAD);
+  for (int i = 0; i < NUM_LEDS_FOOTPAD; i++) {
+    if (i < numLedsLit) {
+      footpad_leds[i].setRGB(r, g, b);
     } else {
-      footpad_leds[i].setRGB(BATTERY_INDICATOR_ALTERNATE_LED_RED, BATTERY_INDICATOR_ALTERNATE_LED_GREEN, BATTERY_INDICATOR_ALTERNATE_LED_BLUE);
+      footpad_leds[i].setRGB(BATTERY_EMPTY_LED_RED, BATTERY_EMPTY_LED_GREEN, BATTERY_EMPTY_LED_BLUE);
     }
   }
 }
