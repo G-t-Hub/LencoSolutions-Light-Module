@@ -41,12 +41,14 @@
 #define FOOTPAD_KNIGHTRIDER_LED_RED 0
 #define FOOTPAD_KNIGHTRIDER_LED_GREEN 0
 #define FOOTPAD_KNIGHTRIDER_LED_BLUE 255
-// Footpad: Duty cycle indicator color (moving state) (U3)
-#define DUTY_INDICATOR_LED_RED 0
+// Footpad: Duty cycle indicator colors — tiered by load (U3)
+#define DUTY_INDICATOR_LED_RED 0        // 0–70%: green
 #define DUTY_INDICATOR_LED_GREEN 255
 #define DUTY_INDICATOR_LED_BLUE 0
-// Footpad: Duty cycle high (above 80%) warning color (U3)
-#define DUTY_INDICATOR_HIGH_LED_RED 255
+#define DUTY_INDICATOR_MID_LED_RED 255  // 70–80%: orange
+#define DUTY_INDICATOR_MID_LED_GREEN 80
+#define DUTY_INDICATOR_MID_LED_BLUE 0
+#define DUTY_INDICATOR_HIGH_LED_RED 255 // > 80%: red
 #define DUTY_INDICATOR_HIGH_LED_GREEN 0
 #define DUTY_INDICATOR_HIGH_LED_BLUE 0
 
@@ -560,18 +562,18 @@ void footpadDutyCycleIndicator() {
   int numLedsToLight = (int)((dutyAbs / 100.0) * NUM_LEDS_FOOTPAD);
   numLedsToLight = constrain(numLedsToLight, 0, NUM_LEDS_FOOTPAD);
   
-  // Determine if we're in high duty (above 80%)
-  bool highDuty = (dutyAbs >= 80.0);
-  
+  int r, g, b;
+  if (dutyAbs >= 80.0) {
+    r = DUTY_INDICATOR_HIGH_LED_RED; g = DUTY_INDICATOR_HIGH_LED_GREEN; b = DUTY_INDICATOR_HIGH_LED_BLUE;
+  } else if (dutyAbs >= 70.0) {
+    r = DUTY_INDICATOR_MID_LED_RED;  g = DUTY_INDICATOR_MID_LED_GREEN;  b = DUTY_INDICATOR_MID_LED_BLUE;
+  } else {
+    r = DUTY_INDICATOR_LED_RED;      g = DUTY_INDICATOR_LED_GREEN;      b = DUTY_INDICATOR_LED_BLUE;
+  }
+
   for (int i = 0; i < NUM_LEDS_FOOTPAD; i++) {
     if (i < numLedsToLight) {
-      if (highDuty) {
-        // Red for high duty cycle warning
-        footpad_leds[i].setRGB(DUTY_INDICATOR_HIGH_LED_RED, DUTY_INDICATOR_HIGH_LED_GREEN, DUTY_INDICATOR_HIGH_LED_BLUE);
-      } else {
-        // Normal color for duty cycle
-        footpad_leds[i].setRGB(DUTY_INDICATOR_LED_RED, DUTY_INDICATOR_LED_GREEN, DUTY_INDICATOR_LED_BLUE);
-      }
+      footpad_leds[i].setRGB(r, g, b);
     } else {
       footpad_leds[i].setRGB(0, 0, 0);
     }
