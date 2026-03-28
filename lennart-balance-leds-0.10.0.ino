@@ -116,8 +116,12 @@ bool startupAnimationComplete = false;
 
 int currentLEDIndex = 0;
 int direction = FORWARD;
+int previousDirection = FORWARD;
 int animationDirFlag = 1;
 int previousErpm = 0;
+
+bool directionChanging = false;
+unsigned long directionChangeMS = 0;
 
 // Footpad knight rider animation variables
 int footpadCurrentLEDIndex = 0;
@@ -205,12 +209,30 @@ void loop() {
     FastLED.setBrightness(STARTUP_BRIGHTNESS);
   }
 
+  // === Detect direction change ===
+  if (direction != previousDirection) {
+    directionChanging = true;
+    directionChangeMS = millis();
+    previousDirection = direction;
+  }
+
   // === LED patterns ===
   if (startupState) {
     processStartupAction();
   } else if (movingState) {
-    knightRider(FORWARD_LED_RED, FORWARD_LED_GREEN, FORWARD_LED_BLUE, 5);
-    footpadDutyCycleIndicator(); //ASK
+    if (directionChanging) {
+      // Fade both strips to black during direction transition
+      for (int i = 0; i < NUM_LEDS; i++) {
+        forward_leds[i].fadeToBlackBy(40);
+        reverse_leds[i].fadeToBlackBy(40);
+      }
+      if (millis() - directionChangeMS >= 300) {
+        directionChanging = false;
+      }
+    } else {
+      knightRider(FORWARD_LED_RED, FORWARD_LED_GREEN, FORWARD_LED_BLUE, 5);
+      footpadDutyCycleIndicator(); //ASK
+    }
   }
 
   // === Brake logic ===
