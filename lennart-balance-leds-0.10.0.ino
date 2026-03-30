@@ -120,8 +120,14 @@ int previousDirection = FORWARD;
 int animationDirFlag = 1;
 int previousErpm = 0;
 
-bool directionChanging = false;
-unsigned long directionChangeMS = 0;
+bool ledFadeActive = false;
+bool fadeForwardReverse = false;
+bool fadeFootpad = false;
+unsigned long ledFadeStartMS = 0;
+bool wasMovingState = false;
+
+int currentBrightness = STARTUP_BRIGHTNESS;
+int targetBrightness = STARTUP_BRIGHTNESS;
 
 // Footpad knight rider animation variables
 int footpadCurrentLEDIndex = 0;
@@ -136,6 +142,7 @@ void knightRider(int red, int green, int blue, int ridingWidth);
 void checkBraking();
 void footpadKnightRider();
 void footpadDutyCycleIndicator();
+void requestLEDFade(bool forwardReverse, bool footpad);
 
 void setup() {
   // Serial.begin(115200);
@@ -193,12 +200,12 @@ void loop() {
     startupState = false;
     movingState = true;
     direction = FORWARD;
-    FastLED.setBrightness(NORMAL_BRIGHTNESS);
+    targetBrightness = NORMAL_BRIGHTNESS;
   } else if (globalErpm < -200) {
     startupState = false;
     movingState = true;
     direction = REVERSE;
-    FastLED.setBrightness(NORMAL_BRIGHTNESS);
+    targetBrightness = NORMAL_BRIGHTNESS;
   } else {
     if (movingState && !startupState)
     {
@@ -206,33 +213,39 @@ void loop() {
     }
     startupState = true;
     movingState = false;
-    FastLED.setBrightness(STARTUP_BRIGHTNESS);
+    targetBrightness = STARTUP_BRIGHTNESS;
   }
 
-  // === Detect direction change ===
+  // === Detect state and direction transitions ===
+  if (movingState != wasMovingState) requestLEDFade(true, true);
+  wasMovingState = movingState;
+
   if (direction != previousDirection) {
-    directionChanging = true;
-    directionChangeMS = millis();
+    requestLEDFade(true, false);
     previousDirection = direction;
   }
 
   // === LED patterns ===
-  if (startupState) {
+  if (ledFadeActive) {
+    if (fadeForwardReverse) {
+      for (int i = 0; i < NUM_LEDS; i++) {
+        forward_leds[i].fadeToBlackBy(60);
+        reverse_leds[i].fadeToBlackBy(60);
+      }
+    }
+    if (fadeFootpad) {
+      for (int i = 0; i < NUM_LEDS_FOOTPAD; i++) {
+        footpad_leds[i].fadeToBlackBy(60);
+      }
+    }
+    if (millis() - ledFadeStartMS >= 250) {
+      ledFadeActive = false;
+    }
+  } else if (startupState) {
     processStartupAction();
   } else if (movingState) {
-    if (directionChanging) {
-      // Fade both strips to black during direction transition
-      for (int i = 0; i < NUM_LEDS; i++) {
-        forward_leds[i].fadeToBlackBy(40);
-        reverse_leds[i].fadeToBlackBy(40);
-      }
-      if (millis() - directionChangeMS >= 300) {
-        directionChanging = false;
-      }
-    } else {
-      knightRider(FORWARD_LED_RED, FORWARD_LED_GREEN, FORWARD_LED_BLUE, 5);
-      footpadDutyCycleIndicator(); //ASK
-    }
+    knightRider(FORWARD_LED_RED, FORWARD_LED_GREEN, FORWARD_LED_BLUE, 5);
+    footpadDutyCycleIndicator();
   }
 
   // === Brake logic ===
@@ -243,6 +256,8 @@ void loop() {
 
   // === Throttled LED update ===
   if (millis() - lastLEDUpdateMillis >= LED_UPDATE_INTERVAL) {
+    currentBrightness += constrain(targetBrightness - currentBrightness, -5, 5);
+    FastLED.setBrightness(currentBrightness);
     FastLED.show();
     lastLEDUpdateMillis = millis();
   }
@@ -465,6 +480,13 @@ void lowVoltageWarningLEDs() {
   for (int i = 0; i < NUM_LEDS_FOOTPAD; i++) {
     footpad_leds[i] = flashOn ? CRGB(255, 0, 0) : CRGB(0, 0, 0);
   }
+}
+
+void requestLEDFade(bool forwardReverse, bool footpad) {
+  ledFadeActive = true;
+  fadeForwardReverse = forwardReverse;
+  fadeFootpad = footpad;
+  ledFadeStartMS = millis();
 }
 
 void warningLEDs() {
