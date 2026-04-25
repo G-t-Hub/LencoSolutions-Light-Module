@@ -251,6 +251,8 @@ void checkBraking() {
 
   previousErpm = globalErpm;
 
+  if (!esc.ledEnabled) return;
+
   CRGB *leds_const = (direction == FORWARD) ? reverse_leds : forward_leds;
   if (isBraking) {
     for (int i = 0; i < NUM_LEDS; i++) {
