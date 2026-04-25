@@ -36,6 +36,9 @@ class ESC {
     bool footpadTriggered = false;
     double footpadThreshold = 0.30;  // Adjust based on your sensor (0.0-1.0)
 
+    // LencoLED config — set via CAN commands from VESC Express
+    bool ledEnabled = true;
+
     ESC() : mcp2515(10) {} // CS pin for MCP2515
 
     void setup() {
@@ -80,6 +83,12 @@ class ESC {
           // Handle STATUS_6 messages with ADC data
         else if (id == (0x80000000 + ((uint16_t)CAN_PACKET_STATUS_6 << 8) + ESC_CAN_ID)) {
           parseStatus6();
+        }
+        else if (id == NODE_CAN_ID) {
+          // Standard frame from VESC Express — config command
+          if (rxFrame.can_dlc >= 2 && rxFrame.data[0] == 0x04) {
+            ledEnabled = (rxFrame.data[1] == 1);
+          }
         }
       }
     }

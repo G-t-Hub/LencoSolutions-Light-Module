@@ -62,7 +62,7 @@
 #define NORMAL_BRIGHTNESS 255 
 
 #define NUM_LEDS 17 
-#define NUM_LEDS_FOOTPAD 17 
+#define NUM_LEDS_FOOTPAD 10
 
 #define FORWARD_PIN 5
 #define REVERSE_PIN 6
@@ -226,7 +226,11 @@ void loop() {
   }
 
   // === LED patterns ===
-  if (ledFadeActive) {
+  if (!esc.ledEnabled) {
+    fill_solid(forward_leds, NUM_LEDS, CRGB::Black);
+    fill_solid(reverse_leds, NUM_LEDS, CRGB::Black);
+    fill_solid(footpad_leds, NUM_LEDS_FOOTPAD, CRGB::Black);
+  } else if (ledFadeActive) {
     if (fadeForwardReverse) {
       for (int i = 0; i < NUM_LEDS; i++) {
         forward_leds[i].fadeToBlackBy(60);
