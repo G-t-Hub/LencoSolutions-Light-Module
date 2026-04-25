@@ -1,16 +1,39 @@
 #include <Arduino.h>
 #include <FastLED.h>
+#include <EEPROM.h>
 
 #undef SPI_CLOCK     // Prevent FastLED/MCP2515 macro conflict
 
 #include "balance_beeper.cpp"
-#include "esc.cpp"   // includes your updated ESC class
+#include "esc.cpp"
 
-// LED color defaults are defined in esc.cpp (esc.ledColors[id][r/g/b])
-// and can be updated at runtime via LencoLED CAN commands.
-// Color group IDs: 0=Forward, 1=Reverse, 2=Startup, 3=BattHigh, 4=BattMid,
-// 5=BattLow, 6=BattEmpty, 7=FootpadIndicator, 8=FootpadKnightRider,
-// 9=Duty0-70, 10=Duty70-80, 11=Duty>80
+// EEPROM layout (45 bytes total)
+#define EEPROM_MAGIC_ADDR      0  // uint16: 0xABCD if initialized
+#define EEPROM_COLORS_ADDR     2  // 36 bytes: 12 groups × 3 (RGB)
+#define EEPROM_THRESH_ADDR    38  // uint16: footpadThreshold × 100
+#define EEPROM_FULL_V_ADDR    40  // uint16: fullVoltage × 10
+#define EEPROM_LOW_V_ADDR     42  // uint16: lowVoltage × 10
+#define EEPROM_LED_STATE_ADDR 44  // uint8: startup LED state (0/1)
+
+// LencoLED runtime config — updated via CAN commands from VESC Express, persisted in EEPROM
+bool ledEnabled = true;
+uint8_t startupLedState = 1;
+double lowVoltage = 48.0;
+double fullVoltage = 67.2;
+uint8_t ledColors[12][3] = {
+  {228, 158,   0},  // 0: Forward LEDs
+  {255,   0,   0},  // 1: Reverse LEDs
+  { 50, 205,  50},  // 2: Startup Animation
+  {  0, 255,   0},  // 3: Battery High (> 40%)
+  {255, 180,   0},  // 4: Battery Mid (20-40%)
+  {255,   0,   0},  // 5: Battery Low (< 20%)
+  {  0,   0,  30},  // 6: Battery Empty
+  {  0,   0, 255},  // 7: Footpad Indicator
+  {  0,   0, 255},  // 8: Footpad Knight Rider
+  {  0, 255,   0},  // 9: Duty 0-70%
+  {255,  80,   0},  // 10: Duty 70-80%
+  {255,   0,   0},  // 11: Duty > 80%
+};
 
 #define BATTERY_INDICATOR_DURATION 5000 // 5 seconds
 #define STARTUP_ANIMATION_DURATION 5000 // 5 seconds
@@ -103,10 +126,17 @@ void checkBraking();
 void footpadKnightRider();
 void footpadDutyCycleIndicator();
 void requestLEDFade(bool forwardReverse, bool footpad);
+void handleConfigCommand(uint8_t* data, uint8_t len);
+void initEEPROM();
+void loadFromEEPROM();
+void saveAllToEEPROM();
+void saveColorToEEPROM(uint8_t id);
+void saveSettingsToEEPROM();
 
 void setup() {
   // Serial.begin(115200);
   esc.setup();
+  initEEPROM();
   balanceBeeper.setup();
 
   FastLED.addLeds<WS2812B, FORWARD_PIN, GRB>(forward_leds, NUM_LEDS)
@@ -122,9 +152,9 @@ void setup() {
 
   // Initial LED pattern
   for (int i = 0; i < NUM_LEDS; i++) {
-    forward_leds[i] = CRGB(esc.ledColors[0][0], esc.ledColors[0][1], esc.ledColors[0][2]);
+    forward_leds[i] = CRGB(ledColors[0][0], ledColors[0][1], ledColors[0][2]);
     reverse_leds[i] = (i % 2 == 0)
-        ? CRGB(esc.ledColors[1][0], esc.ledColors[1][1], esc.ledColors[1][2])
+        ? CRGB(ledColors[1][0], ledColors[1][1], ledColors[1][2])
         : CRGB(0, 0, 0);
   }
 
@@ -137,6 +167,10 @@ void loop() {
   
   // Passive listening for status 6;
   esc.listenForMessages();
+  if (esc.configFrameAvailable) {
+    handleConfigCommand(esc.configFrameData, esc.configFrameLen);
+    esc.configFrameAvailable = false;
+  }
 
   // === Periodic CAN polling ===
   if (millis() - lastCanPollTime >= CAN_POLLING_INTERVAL) {
@@ -153,7 +187,7 @@ void loop() {
   }
 
   // === Use global data ===
-  balanceBeeper.loop(globalDutyCycle, globalErpm, globalVoltage, esc.lowVoltage);
+  balanceBeeper.loop(globalDutyCycle, globalErpm, globalVoltage, lowVoltage);
 
   // === Determine direction and state ===
   if (globalErpm > 200) {
@@ -186,7 +220,7 @@ void loop() {
   }
 
   // === LED patterns ===
-  if (!esc.ledEnabled) {
+  if (!ledEnabled) {
     fill_solid(forward_leds, NUM_LEDS, CRGB::Black);
     fill_solid(reverse_leds, NUM_LEDS, CRGB::Black);
     fill_solid(footpad_leds, NUM_LEDS_FOOTPAD, CRGB::Black);
@@ -208,7 +242,7 @@ void loop() {
   } else if (startupState) {
     processStartupAction();
   } else if (movingState) {
-    knightRider(esc.ledColors[0][0], esc.ledColors[0][1], esc.ledColors[0][2], 5);
+    knightRider(ledColors[0][0], ledColors[0][1], ledColors[0][2], 5);
     footpadDutyCycleIndicator();
   }
 
@@ -251,17 +285,17 @@ void checkBraking() {
 
   previousErpm = globalErpm;
 
-  if (!esc.ledEnabled) return;
+  if (!ledEnabled) return;
 
   CRGB *leds_const = (direction == FORWARD) ? reverse_leds : forward_leds;
   if (isBraking) {
     for (int i = 0; i < NUM_LEDS; i++) {
-      leds_const[i].setRGB(esc.ledColors[1][0], esc.ledColors[1][1], esc.ledColors[1][2]);
+      leds_const[i].setRGB(ledColors[1][0], ledColors[1][1], ledColors[1][2]);
     }
   } else {
     for (int i = 0; i < NUM_LEDS; i++) {
       if (i % 2 == 0)
-        leds_const[i].setRGB(esc.ledColors[1][0], esc.ledColors[1][1], esc.ledColors[1][2]);
+        leds_const[i].setRGB(ledColors[1][0], ledColors[1][1], ledColors[1][2]);
       else
         leds_const[i] = CRGB(0, 0, 0);
     }
@@ -356,7 +390,7 @@ void processStartupAction() {
   }
 
   // Priority 2: Low voltage warning — overrides all idle animations
-  if (globalVoltage > 0.0 && (globalVoltage - esc.lowVoltage) / (esc.fullVoltage - esc.lowVoltage) <= 0.10) {
+  if (globalVoltage > 0.0 && (globalVoltage - lowVoltage) / (fullVoltage - lowVoltage) <= 0.10) {
     lowVoltageWarningLEDs();
     return;
   }
@@ -415,7 +449,7 @@ void startupAnimation() {
   // Light up footpad LEDs progressively
   for (int i = 0; i < NUM_LEDS_FOOTPAD; i++) {
     if (i < numLeds) {
-      footpad_leds[i] = CRGB(esc.ledColors[2][0], esc.ledColors[2][1], esc.ledColors[2][2]);
+      footpad_leds[i] = CRGB(ledColors[2][0], ledColors[2][1], ledColors[2][2]);
     } else {
       footpad_leds[i] = CRGB(0, 0, 0);
     }
@@ -426,14 +460,14 @@ void staticStartupLEDs() {
      // Static startup LEDs
   for (int i = 0; i < NUM_LEDS; i++) {
     if (direction == FORWARD) {
-      forward_leds[i] = CRGB(esc.ledColors[0][0], esc.ledColors[0][1], esc.ledColors[0][2]);
+      forward_leds[i] = CRGB(ledColors[0][0], ledColors[0][1], ledColors[0][2]);
       reverse_leds[i] = (i % 2 == 0)
-          ? CRGB(esc.ledColors[1][0], esc.ledColors[1][1], esc.ledColors[1][2])
+          ? CRGB(ledColors[1][0], ledColors[1][1], ledColors[1][2])
           : CRGB(0, 0, 0);
     } else {
-      reverse_leds[i] = CRGB(esc.ledColors[0][0], esc.ledColors[0][1], esc.ledColors[0][2]); //swapped due to inverse direction
+      reverse_leds[i] = CRGB(ledColors[0][0], ledColors[0][1], ledColors[0][2]); //swapped due to inverse direction
       forward_leds[i] = (i % 2 == 0)
-          ? CRGB(esc.ledColors[1][0], esc.ledColors[1][1], esc.ledColors[1][2])
+          ? CRGB(ledColors[1][0], ledColors[1][1], ledColors[1][2])
           : CRGB(0, 0, 0);
     }
   }
@@ -465,7 +499,7 @@ void warningLEDs() {
 }
 
 void batteryPercentStartupLEDs() {
-  double batteryVoltagePercentage = (globalVoltage - esc.lowVoltage) / (esc.fullVoltage - esc.lowVoltage);
+  double batteryVoltagePercentage = (globalVoltage - lowVoltage) / (fullVoltage - lowVoltage);
 
   // Voltage is outside the expected range — likely misconfigured voltage constants
   if (batteryVoltagePercentage < -0.10 || batteryVoltagePercentage > 1.10) {
@@ -479,11 +513,11 @@ void batteryPercentStartupLEDs() {
 
   int r, g, b;
   if (batteryVoltagePercentage <= 0.20) {
-    r = esc.ledColors[5][0]; g = esc.ledColors[5][1]; b = esc.ledColors[5][2]; // Battery Low
+    r = ledColors[5][0]; g = ledColors[5][1]; b = ledColors[5][2]; // Battery Low
   } else if (batteryVoltagePercentage <= 0.40) {
-    r = esc.ledColors[4][0]; g = esc.ledColors[4][1]; b = esc.ledColors[4][2]; // Battery Mid
+    r = ledColors[4][0]; g = ledColors[4][1]; b = ledColors[4][2]; // Battery Mid
   } else {
-    r = esc.ledColors[3][0]; g = esc.ledColors[3][1]; b = esc.ledColors[3][2]; // Battery High
+    r = ledColors[3][0]; g = ledColors[3][1]; b = ledColors[3][2]; // Battery High
   }
 
   int numLedsLit = (int)(batteryVoltagePercentage * NUM_LEDS_FOOTPAD);
@@ -491,7 +525,7 @@ void batteryPercentStartupLEDs() {
     if (i < numLedsLit) {
       footpad_leds[i].setRGB(r, g, b);
     } else {
-      footpad_leds[i].setRGB(esc.ledColors[6][0], esc.ledColors[6][1], esc.ledColors[6][2]); // Battery Empty
+      footpad_leds[i].setRGB(ledColors[6][0], ledColors[6][1], ledColors[6][2]); // Battery Empty
     }
   }
 }
@@ -503,7 +537,7 @@ void singleFootpadTriggeredStartupLEDs() {
     for (int i = 0; i < NUM_LEDS_FOOTPAD; i++)
     {
       if (i < NUM_LEDS_FOOTPAD/2){
-        footpad_leds[i].setRGB(esc.ledColors[7][0], esc.ledColors[7][1], esc.ledColors[7][2]);
+        footpad_leds[i].setRGB(ledColors[7][0], ledColors[7][1], ledColors[7][2]);
       }
       else {
         footpad_leds[i].setRGB(0, 0, 0);
@@ -517,7 +551,7 @@ void singleFootpadTriggeredStartupLEDs() {
     for (int i = 0; i < NUM_LEDS_FOOTPAD; i++)
     {
       if (i > NUM_LEDS_FOOTPAD/2){
-        footpad_leds[i].setRGB(esc.ledColors[7][0], esc.ledColors[7][1], esc.ledColors[7][2]);
+        footpad_leds[i].setRGB(ledColors[7][0], ledColors[7][1], ledColors[7][2]);
       }
       else {
         footpad_leds[i].setRGB(0, 0, 0);
@@ -546,9 +580,9 @@ void footpadKnightRider() {
         else fadeFactor = 100;                              
       
         footpad_leds[idx].setRGB(
-          (esc.ledColors[8][0] * fadeFactor) / 100,
-          (esc.ledColors[8][1] * fadeFactor) / 100,
-          (esc.ledColors[8][2] * fadeFactor) / 100
+          (ledColors[8][0] * fadeFactor) / 100,
+          (ledColors[8][1] * fadeFactor) / 100,
+          (ledColors[8][2] * fadeFactor) / 100
         );
       }
     }
@@ -576,11 +610,11 @@ void footpadDutyCycleIndicator() {
   
   int r, g, b;
   if (dutyAbs >= 80.0) {
-    r = esc.ledColors[11][0]; g = esc.ledColors[11][1]; b = esc.ledColors[11][2]; // Duty > 80%
+    r = ledColors[11][0]; g = ledColors[11][1]; b = ledColors[11][2]; // Duty > 80%
   } else if (dutyAbs >= 70.0) {
-    r = esc.ledColors[10][0]; g = esc.ledColors[10][1]; b = esc.ledColors[10][2]; // Duty 70-80%
+    r = ledColors[10][0]; g = ledColors[10][1]; b = ledColors[10][2]; // Duty 70-80%
   } else {
-    r = esc.ledColors[9][0];  g = esc.ledColors[9][1];  b = esc.ledColors[9][2];  // Duty 0-70%
+    r = ledColors[9][0];  g = ledColors[9][1];  b = ledColors[9][2];  // Duty 0-70%
   }
 
   for (int i = 0; i < NUM_LEDS_FOOTPAD; i++) {
@@ -589,5 +623,100 @@ void footpadDutyCycleIndicator() {
     } else {
       footpad_leds[i].setRGB(0, 0, 0);
     }
+  }
+}
+
+// === LencoLED config command handler ===
+
+void handleConfigCommand(uint8_t* data, uint8_t len) {
+  if (len < 1) return;
+  switch (data[0]) {
+    case 0x01: // CMD_SET_COLOR
+      if (len >= 5 && data[1] < 12) {
+        ledColors[data[1]][0] = data[2];
+        ledColors[data[1]][1] = data[3];
+        ledColors[data[1]][2] = data[4];
+        saveColorToEEPROM(data[1]);
+      }
+      break;
+    case 0x02: // CMD_SET_THRESHOLD
+      if (len >= 3) {
+        esc.footpadThreshold = ((uint16_t(data[1]) << 8) | data[2]) / 100.0;
+        saveSettingsToEEPROM();
+      }
+      break;
+    case 0x03: // CMD_SET_BATTERY
+      if (len >= 5) {
+        fullVoltage = ((uint16_t(data[1]) << 8) | data[2]) / 10.0;
+        lowVoltage  = ((uint16_t(data[3]) << 8) | data[4]) / 10.0;
+        saveSettingsToEEPROM();
+      }
+      break;
+    case 0x04: // CMD_SET_LED_STATE
+      if (len >= 2) {
+        ledEnabled = (data[1] == 1);
+        if (len >= 3 && data[2] == 1) {
+          startupLedState = data[1];
+          EEPROM.update(EEPROM_LED_STATE_ADDR, startupLedState);
+        }
+      }
+      break;
+    case 0x05: // CMD_READ_ALL — response deferred (requires VESC Express CAN receive, Step 10)
+      break;
+  }
+}
+
+// === EEPROM helpers ===
+
+void loadFromEEPROM() {
+  for (uint8_t i = 0; i < 12; i++) {
+    ledColors[i][0] = EEPROM.read(EEPROM_COLORS_ADDR + i * 3);
+    ledColors[i][1] = EEPROM.read(EEPROM_COLORS_ADDR + i * 3 + 1);
+    ledColors[i][2] = EEPROM.read(EEPROM_COLORS_ADDR + i * 3 + 2);
+  }
+  uint16_t threshRaw; EEPROM.get(EEPROM_THRESH_ADDR, threshRaw);
+  esc.footpadThreshold = threshRaw / 100.0;
+  uint16_t fullRaw; EEPROM.get(EEPROM_FULL_V_ADDR, fullRaw);
+  fullVoltage = fullRaw / 10.0;
+  uint16_t lowRaw; EEPROM.get(EEPROM_LOW_V_ADDR, lowRaw);
+  lowVoltage = lowRaw / 10.0;
+  startupLedState = EEPROM.read(EEPROM_LED_STATE_ADDR);
+  ledEnabled = (startupLedState == 1);
+}
+
+void saveAllToEEPROM() {
+  for (uint8_t i = 0; i < 12; i++) {
+    EEPROM.update(EEPROM_COLORS_ADDR + i * 3,     ledColors[i][0]);
+    EEPROM.update(EEPROM_COLORS_ADDR + i * 3 + 1, ledColors[i][1]);
+    EEPROM.update(EEPROM_COLORS_ADDR + i * 3 + 2, ledColors[i][2]);
+  }
+  saveSettingsToEEPROM();
+  EEPROM.update(EEPROM_LED_STATE_ADDR, startupLedState);
+}
+
+void saveColorToEEPROM(uint8_t id) {
+  EEPROM.update(EEPROM_COLORS_ADDR + id * 3,     ledColors[id][0]);
+  EEPROM.update(EEPROM_COLORS_ADDR + id * 3 + 1, ledColors[id][1]);
+  EEPROM.update(EEPROM_COLORS_ADDR + id * 3 + 2, ledColors[id][2]);
+}
+
+void saveSettingsToEEPROM() {
+  uint16_t threshRaw = (uint16_t)(esc.footpadThreshold * 100);
+  EEPROM.put(EEPROM_THRESH_ADDR, threshRaw);
+  uint16_t fullRaw = (uint16_t)(fullVoltage * 10);
+  EEPROM.put(EEPROM_FULL_V_ADDR, fullRaw);
+  uint16_t lowRaw = (uint16_t)(lowVoltage * 10);
+  EEPROM.put(EEPROM_LOW_V_ADDR, lowRaw);
+}
+
+void initEEPROM() {
+  uint16_t magic;
+  EEPROM.get(EEPROM_MAGIC_ADDR, magic);
+  if (magic != 0xABCD) {
+    saveAllToEEPROM();
+    uint16_t m = 0xABCD;
+    EEPROM.put(EEPROM_MAGIC_ADDR, m);
+  } else {
+    loadFromEEPROM();
   }
 }

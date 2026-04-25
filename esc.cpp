@@ -1,18 +1,9 @@
 #include <Arduino.h>
 #include <SPI.h>
-#include <EEPROM.h>
 #include "mcp2515.h"
 
 #define ESC_CAN_ID 104
 #define NODE_CAN_ID 36 // Your device's CAN ID
-
-// EEPROM layout (45 bytes total)
-#define EEPROM_MAGIC_ADDR     0  // uint16: 0xABCD if initialized
-#define EEPROM_COLORS_ADDR    2  // 36 bytes: 12 groups × 3 (RGB)
-#define EEPROM_THRESH_ADDR   38  // uint16: footpadThreshold × 100
-#define EEPROM_FULL_V_ADDR   40  // uint16: fullVoltage × 10
-#define EEPROM_LOW_V_ADDR    42  // uint16: lowVoltage × 10
-#define EEPROM_LED_STATE_ADDR 44 // uint8: startup LED state (0/1)
 
 // Relevant CAN command IDs
 typedef enum {
@@ -38,32 +29,18 @@ class ESC {
     // ADC vars (normalized 0.0-1.0 from STATUS_6)
     double adc1 = 0.0;
     double adc2 = 0.0;
-  
+
     bool adcDataAvailable = false;
 
     // Footpad detection
     bool footpadTriggered = false;
-    double footpadThreshold = 0.30;  // Adjust based on your sensor (0.0-1.0)
+    double footpadThreshold = 0.30;
 
-    // LencoLED config — set via CAN commands from VESC Express
-    bool ledEnabled = true;
-    uint8_t startupLedState = 1;
-    double lowVoltage = 48.0;
-    double fullVoltage = 67.2;
-    uint8_t ledColors[12][3] = {
-      {228, 158,   0},  // 0: Forward LEDs
-      {255,   0,   0},  // 1: Reverse LEDs
-      { 50, 205,  50},  // 2: Startup Animation
-      {  0, 255,   0},  // 3: Battery High (> 40%)
-      {255, 180,   0},  // 4: Battery Mid (20-40%)
-      {255,   0,   0},  // 5: Battery Low (< 20%)
-      {  0,   0,  30},  // 6: Battery Empty
-      {  0,   0, 255},  // 7: Footpad Indicator
-      {  0,   0, 255},  // 8: Footpad Knight Rider
-      {  0, 255,   0},  // 9: Duty 0-70%
-      {255,  80,   0},  // 10: Duty 70-80%
-      {255,   0,   0},  // 11: Duty > 80%
-    };
+    // Buffered config frame from VESC Express (standard CAN frame to NODE_CAN_ID)
+    // The .ino polls configFrameAvailable and handles command interpretation.
+    bool configFrameAvailable = false;
+    uint8_t configFrameData[8];
+    uint8_t configFrameLen = 0;
 
     ESC() : mcp2515(10) {} // CS pin for MCP2515
 
@@ -72,19 +49,6 @@ class ESC {
       mcp2515.reset();
       mcp2515.setBitrate(CAN_500KBPS, MCP_8MHZ);
       mcp2515.setNormalMode();
-      initEEPROM();
-    }
-
-    void initEEPROM() {
-      uint16_t magic;
-      EEPROM.get(EEPROM_MAGIC_ADDR, magic);
-      if (magic != 0xABCD) {
-        saveAllToEEPROM();
-        uint16_t m = 0xABCD;
-        EEPROM.put(EEPROM_MAGIC_ADDR, m);
-      } else {
-        loadFromEEPROM();
-      }
     }
 
     // Called periodically (e.g. every 100ms)
@@ -99,11 +63,11 @@ class ESC {
 
       // Read ALL pending messages to avoid buffer overflow
       for (int i = 0; i < 10; i++) {  // Read up to 10 messages per call
-        
-        if (mcp2515.readMessage(&rxFrame) != MCP2515::ERROR_OK) { 
+
+        if (mcp2515.readMessage(&rxFrame) != MCP2515::ERROR_OK) {
           break;  // No more messages
         }
-      
+
         // Non-blocking read — only parses known message types
         uint32_t id = rxFrame.can_id;
         if (id == (0x80000000 + ((uint16_t)CAN_PACKET_FILL_RX_BUFFER << 8) + NODE_CAN_ID)) {
@@ -111,105 +75,27 @@ class ESC {
             memcpy(&rxData[rxFrame.data[0]], &rxFrame.data[1], rxFrame.can_dlc - 1);
             rxLen += rxFrame.can_dlc - 1;
           }
-        } 
+        }
         else if (id == (0x80000000 + ((uint16_t)CAN_PACKET_PROCESS_RX_BUFFER << 8) + NODE_CAN_ID)) {
           // Check if this is a realtime data response
           if (rxLen >= 17 && rxData[0] == 0x32) {
             parseRealtimeData();
           }
-          rxLen = 0;    
+          rxLen = 0;
         }
-          // Handle STATUS_6 messages with ADC data
         else if (id == (0x80000000 + ((uint16_t)CAN_PACKET_STATUS_6 << 8) + ESC_CAN_ID)) {
           parseStatus6();
         }
         else if (id == NODE_CAN_ID) {
-          // Standard frame from VESC Express — config command
-          handleConfigCommand(rxFrame.data, rxFrame.can_dlc);
+          // Standard frame from VESC Express — buffer for .ino to handle
+          memcpy(configFrameData, rxFrame.data, rxFrame.can_dlc);
+          configFrameLen = rxFrame.can_dlc;
+          configFrameAvailable = true;
         }
       }
     }
 
   private:
-    void loadFromEEPROM() {
-      for (uint8_t i = 0; i < 12; i++) {
-        ledColors[i][0] = EEPROM.read(EEPROM_COLORS_ADDR + i * 3);
-        ledColors[i][1] = EEPROM.read(EEPROM_COLORS_ADDR + i * 3 + 1);
-        ledColors[i][2] = EEPROM.read(EEPROM_COLORS_ADDR + i * 3 + 2);
-      }
-      uint16_t threshRaw; EEPROM.get(EEPROM_THRESH_ADDR, threshRaw);
-      footpadThreshold = threshRaw / 100.0;
-      uint16_t fullRaw; EEPROM.get(EEPROM_FULL_V_ADDR, fullRaw);
-      fullVoltage = fullRaw / 10.0;
-      uint16_t lowRaw; EEPROM.get(EEPROM_LOW_V_ADDR, lowRaw);
-      lowVoltage = lowRaw / 10.0;
-      startupLedState = EEPROM.read(EEPROM_LED_STATE_ADDR);
-      ledEnabled = (startupLedState == 1);
-    }
-
-    void saveAllToEEPROM() {
-      for (uint8_t i = 0; i < 12; i++) {
-        EEPROM.update(EEPROM_COLORS_ADDR + i * 3,     ledColors[i][0]);
-        EEPROM.update(EEPROM_COLORS_ADDR + i * 3 + 1, ledColors[i][1]);
-        EEPROM.update(EEPROM_COLORS_ADDR + i * 3 + 2, ledColors[i][2]);
-      }
-      saveSettingsToEEPROM();
-      EEPROM.update(EEPROM_LED_STATE_ADDR, startupLedState);
-    }
-
-    void saveColorToEEPROM(uint8_t id) {
-      EEPROM.update(EEPROM_COLORS_ADDR + id * 3,     ledColors[id][0]);
-      EEPROM.update(EEPROM_COLORS_ADDR + id * 3 + 1, ledColors[id][1]);
-      EEPROM.update(EEPROM_COLORS_ADDR + id * 3 + 2, ledColors[id][2]);
-    }
-
-    void saveSettingsToEEPROM() {
-      uint16_t threshRaw = (uint16_t)(footpadThreshold * 100);
-      EEPROM.put(EEPROM_THRESH_ADDR, threshRaw);
-      uint16_t fullRaw = (uint16_t)(fullVoltage * 10);
-      EEPROM.put(EEPROM_FULL_V_ADDR, fullRaw);
-      uint16_t lowRaw = (uint16_t)(lowVoltage * 10);
-      EEPROM.put(EEPROM_LOW_V_ADDR, lowRaw);
-    }
-
-    void handleConfigCommand(uint8_t* data, uint8_t len) {
-      if (len < 1) return;
-      switch (data[0]) {
-        case 0x01: // CMD_SET_COLOR
-          if (len >= 5 && data[1] < 12) {
-            ledColors[data[1]][0] = data[2];
-            ledColors[data[1]][1] = data[3];
-            ledColors[data[1]][2] = data[4];
-            saveColorToEEPROM(data[1]);
-          }
-          break;
-        case 0x02: // CMD_SET_THRESHOLD
-          if (len >= 3) {
-            footpadThreshold = ((uint16_t(data[1]) << 8) | data[2]) / 100.0;
-            saveSettingsToEEPROM();
-          }
-          break;
-        case 0x03: // CMD_SET_BATTERY
-          if (len >= 5) {
-            fullVoltage = ((uint16_t(data[1]) << 8) | data[2]) / 10.0;
-            lowVoltage  = ((uint16_t(data[3]) << 8) | data[4]) / 10.0;
-            saveSettingsToEEPROM();
-          }
-          break;
-        case 0x04: // CMD_SET_LED_STATE
-          if (len >= 2) {
-            ledEnabled = (data[1] == 1);
-            if (len >= 3 && data[2] == 1) {
-              startupLedState = data[1];
-              EEPROM.update(EEPROM_LED_STATE_ADDR, startupLedState);
-            }
-          }
-          break;
-        case 0x05: // CMD_READ_ALL — response deferred (requires VESC Express CAN receive, Step 10)
-          break;
-      }
-    }
-
     void sendRealtimeRequest() {
       struct can_frame msg;
       msg.can_id  = (uint32_t(0x8000) << 16) | (uint16_t(CAN_PACKET_PROCESS_SHORT_BUFFER) << 8) | ESC_CAN_ID;
@@ -274,11 +160,10 @@ class ESC {
 
       // Check current footpad state based on threshold
       bool currentState = (adc1 > footpadThreshold || adc2 > footpadThreshold);
-      
+
       // Update immediately - let the application handle debouncing if needed
       footpadTriggered = currentState;
-      
+
       adcDataAvailable = true;
     }
 };
-
