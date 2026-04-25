@@ -38,6 +38,22 @@ class ESC {
 
     // LencoLED config — set via CAN commands from VESC Express
     bool ledEnabled = true;
+    double lowVoltage = 48.0;
+    double fullVoltage = 67.2;
+    uint8_t ledColors[12][3] = {
+      {228, 158,   0},  // 0: Forward LEDs
+      {255,   0,   0},  // 1: Reverse LEDs
+      { 50, 205,  50},  // 2: Startup Animation
+      {  0, 255,   0},  // 3: Battery High (> 40%)
+      {255, 180,   0},  // 4: Battery Mid (20-40%)
+      {255,   0,   0},  // 5: Battery Low (< 20%)
+      {  0,   0,  30},  // 6: Battery Empty
+      {  0,   0, 255},  // 7: Footpad Indicator
+      {  0,   0, 255},  // 8: Footpad Knight Rider
+      {  0, 255,   0},  // 9: Duty 0-70%
+      {255,  80,   0},  // 10: Duty 70-80%
+      {255,   0,   0},  // 11: Duty > 80%
+    };
 
     ESC() : mcp2515(10) {} // CS pin for MCP2515
 
@@ -86,14 +102,41 @@ class ESC {
         }
         else if (id == NODE_CAN_ID) {
           // Standard frame from VESC Express — config command
-          if (rxFrame.can_dlc >= 2 && rxFrame.data[0] == 0x04) {
-            ledEnabled = (rxFrame.data[1] == 1);
-          }
+          handleConfigCommand(rxFrame.data, rxFrame.can_dlc);
         }
       }
     }
 
   private:
+    void handleConfigCommand(uint8_t* data, uint8_t len) {
+      if (len < 1) return;
+      switch (data[0]) {
+        case 0x01: // CMD_SET_COLOR
+          if (len >= 5 && data[1] < 12) {
+            ledColors[data[1]][0] = data[2];
+            ledColors[data[1]][1] = data[3];
+            ledColors[data[1]][2] = data[4];
+          }
+          break;
+        case 0x02: // CMD_SET_THRESHOLD
+          if (len >= 3)
+            footpadThreshold = ((uint16_t(data[1]) << 8) | data[2]) / 100.0;
+          break;
+        case 0x03: // CMD_SET_BATTERY
+          if (len >= 5) {
+            fullVoltage = ((uint16_t(data[1]) << 8) | data[2]) / 10.0;
+            lowVoltage  = ((uint16_t(data[3]) << 8) | data[4]) / 10.0;
+          }
+          break;
+        case 0x04: // CMD_SET_LED_STATE
+          if (len >= 2)
+            ledEnabled = (data[1] == 1);
+          break;
+        case 0x05: // CMD_READ_ALL — response deferred (requires VESC Express CAN receive, Step 10)
+          break;
+      }
+    }
+
     void sendRealtimeRequest() {
       struct can_frame msg;
       msg.can_id  = (uint32_t(0x8000) << 16) | (uint16_t(CAN_PACKET_PROCESS_SHORT_BUFFER) << 8) | ESC_CAN_ID;
