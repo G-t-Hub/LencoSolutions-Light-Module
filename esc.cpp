@@ -43,6 +43,8 @@ class ESC {
     uint8_t configFrameData[8];
     uint8_t configFrameLen = 0;
 
+    bool anyFrameReceived = false;
+
     ESC() : mcp2515(10) {} // CS pin for MCP2515
 
     void setup() {
@@ -85,6 +87,8 @@ class ESC {
         if (mcp2515.readMessage(&rxFrame) != MCP2515::ERROR_OK) {
           break;  // No more messages
         }
+
+        anyFrameReceived = true;
 
         // Non-blocking read — only parses known message types
         uint32_t id = rxFrame.can_id;
@@ -149,6 +153,7 @@ class ESC {
       unsigned long startTime = millis();
       while (millis() - startTime < 5) { // very short window
         if (mcp2515.readMessage(&rxFrame) == MCP2515::ERROR_OK) {
+          anyFrameReceived = true;
           uint32_t id = rxFrame.can_id;
 
           if (id == (0x80000000 + ((uint16_t)CAN_PACKET_FILL_RX_BUFFER << 8) + NODE_CAN_ID)) {

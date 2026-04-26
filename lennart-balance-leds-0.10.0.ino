@@ -169,8 +169,12 @@ void setup() {
 
 void loop() {
   
-  // Passive listening for status 6;
   esc.listenForMessages();
+  if (esc.anyFrameReceived) {
+    diagFlash = true;
+    diagFlashMs = millis();
+    esc.anyFrameReceived = false;
+  }
   if (esc.configFrameAvailable) {
     handleConfigCommand(esc.configFrameData, esc.configFrameLen);
     esc.configFrameAvailable = false;
@@ -262,7 +266,9 @@ void loop() {
     FastLED.setBrightness(currentBrightness);
     if (diagFlash) {
       if (millis() - diagFlashMs < 600) {
-        fill_solid(forward_leds, NUM_LEDS, CRGB(255, 0, 255));
+        for (int i = 0; i < NUM_LEDS; i++) {
+          forward_leds[i] = (i % 2 == 0) ? CRGB(255, 0, 0) : CRGB(0, 0, 0);
+        }
       } else {
         diagFlash = false;
       }
