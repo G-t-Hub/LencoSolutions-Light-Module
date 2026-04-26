@@ -10,8 +10,8 @@ typedef enum {
   CAN_PACKET_PROCESS_SHORT_BUFFER = 8,
   CAN_PACKET_FILL_RX_BUFFER = 5,
   CAN_PACKET_PROCESS_RX_BUFFER = 7,
-  CAN_PACKET_STATUS_6 = 58,        // ADC values broadcast
-  CAN_PACKET_LENCOLED_CONFIG = 60  // LencoLED → Arduino config commands
+  CAN_PACKET_STATUS_6 = 58,         // ADC values broadcast
+  CAN_PACKET_LENCOLED_CONFIG = 240  // LencoLED → Arduino config commands (240 = outside VESC range)
 } CAN_PACKET_ID;
 
 class ESC {
@@ -49,6 +49,23 @@ class ESC {
       SPI.begin();
       mcp2515.reset();
       mcp2515.setBitrate(CAN_500KBPS, MCP_8MHZ);
+
+      // Loopback self-test: send a frame to ourselves in loopback mode.
+      // If received, configFrameAvailable fires handleConfigCommand on first loop()
+      // iteration → diagnostic flash confirms MCP2515 + receive path both work.
+      mcp2515.setLoopbackMode();
+      struct can_frame loopFrame;
+      loopFrame.can_id = NODE_CAN_ID;
+      loopFrame.can_dlc = 1;
+      loopFrame.data[0] = 0x05; // CMD_READ_ALL — harmless stub, won't change LED state
+      mcp2515.sendMessage(&loopFrame);
+      delay(5);
+      if (mcp2515.readMessage(&rxFrame) == MCP2515::ERROR_OK) {
+        memcpy(configFrameData, rxFrame.data, rxFrame.can_dlc);
+        configFrameLen = rxFrame.can_dlc;
+        configFrameAvailable = true;
+      }
+
       mcp2515.setNormalMode();
     }
 
@@ -101,6 +118,12 @@ class ESC {
           configFrameLen = rxFrame.can_dlc;
           configFrameAvailable = true;
         }
+        else if ((id & CAN_EFF_FLAG) && ((id & 0xFF) == NODE_CAN_ID)) {
+          // Extended frame to NODE_CAN_ID with unrecognized packet type — catch-all
+          memcpy(configFrameData, rxFrame.data, rxFrame.can_dlc);
+          configFrameLen = rxFrame.can_dlc;
+          configFrameAvailable = true;
+        }
       }
     }
 
@@ -145,6 +168,11 @@ class ESC {
             configFrameLen = rxFrame.can_dlc;
             configFrameAvailable = true;
           } else if (id == NODE_CAN_ID) {
+            memcpy(configFrameData, rxFrame.data, rxFrame.can_dlc);
+            configFrameLen = rxFrame.can_dlc;
+            configFrameAvailable = true;
+          } else if ((id & CAN_EFF_FLAG) && ((id & 0xFF) == NODE_CAN_ID)) {
+            // Extended frame to NODE_CAN_ID with unrecognized packet type — catch-all
             memcpy(configFrameData, rxFrame.data, rxFrame.can_dlc);
             configFrameLen = rxFrame.can_dlc;
             configFrameAvailable = true;
