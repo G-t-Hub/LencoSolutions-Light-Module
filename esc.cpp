@@ -10,7 +10,8 @@ typedef enum {
   CAN_PACKET_PROCESS_SHORT_BUFFER = 8,
   CAN_PACKET_FILL_RX_BUFFER = 5,
   CAN_PACKET_PROCESS_RX_BUFFER = 7,
-  CAN_PACKET_STATUS_6 = 58  // ADC values broadcast
+  CAN_PACKET_STATUS_6 = 58,        // ADC values broadcast
+  CAN_PACKET_LENCOLED_CONFIG = 60  // LencoLED → Arduino config commands
 } CAN_PACKET_ID;
 
 class ESC {
@@ -86,8 +87,16 @@ class ESC {
         else if (id == (0x80000000 + ((uint16_t)CAN_PACKET_STATUS_6 << 8) + ESC_CAN_ID)) {
           parseStatus6();
         }
+        else if ((id & CAN_EFF_FLAG) &&
+                 ((id & 0xFFFF) == (((uint32_t)CAN_PACKET_LENCOLED_CONFIG << 8) | NODE_CAN_ID))) {
+          // Extended frame from VESC Express — config command
+          // Match only low 16 bits (packet_type << 8 | node_id); upper bits may carry source node ID
+          memcpy(configFrameData, rxFrame.data, rxFrame.can_dlc);
+          configFrameLen = rxFrame.can_dlc;
+          configFrameAvailable = true;
+        }
         else if (id == NODE_CAN_ID) {
-          // Standard frame from VESC Express — buffer for .ino to handle
+          // Standard frame fallback — kept for compatibility
           memcpy(configFrameData, rxFrame.data, rxFrame.can_dlc);
           configFrameLen = rxFrame.can_dlc;
           configFrameAvailable = true;
@@ -130,6 +139,15 @@ class ESC {
               dataReady = true;
             }
             rxLen = 0;
+          } else if ((id & CAN_EFF_FLAG) &&
+                     ((id & 0xFFFF) == (((uint32_t)CAN_PACKET_LENCOLED_CONFIG << 8) | NODE_CAN_ID))) {
+            memcpy(configFrameData, rxFrame.data, rxFrame.can_dlc);
+            configFrameLen = rxFrame.can_dlc;
+            configFrameAvailable = true;
+          } else if (id == NODE_CAN_ID) {
+            memcpy(configFrameData, rxFrame.data, rxFrame.can_dlc);
+            configFrameLen = rxFrame.can_dlc;
+            configFrameAvailable = true;
           }
         }
       }

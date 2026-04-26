@@ -18,8 +18,8 @@
 // LencoLED runtime config — updated via CAN commands from VESC Express, persisted in EEPROM
 bool ledEnabled = true;
 uint8_t startupLedState = 1;
-double lowVoltage = 48.0;
-double fullVoltage = 67.2;
+double lowVoltage = 58.9;
+double fullVoltage = 79.8;
 uint8_t ledColors[12][3] = {
   {228, 158,   0},  // 0: Forward LEDs
   {255,   0,   0},  // 1: Reverse LEDs
@@ -146,7 +146,7 @@ void setup() {
   FastLED.addLeds<WS2812B, FOOTPAD_PIN, GRB>(footpad_leds, NUM_LEDS_FOOTPAD)
       .setCorrection(TypicalLEDStrip);
 
-  FastLED.setMaxPowerInVoltsAndMilliamps(5, 1500);
+  FastLED.setMaxPowerInVoltsAndMilliamps(5, 500);
   FastLED.setBrightness(STARTUP_BRIGHTNESS);
   FastLED.clear();
 
@@ -712,9 +712,9 @@ void saveSettingsToEEPROM() {
 void initEEPROM() {
   uint16_t magic;
   EEPROM.get(EEPROM_MAGIC_ADDR, magic);
-  if (magic != 0xABCD) {
+  if (magic != 0xABCE) {
     saveAllToEEPROM();
-    uint16_t m = 0xABCD;
+    uint16_t m = 0xABCE;
     EEPROM.put(EEPROM_MAGIC_ADDR, m);
   } else {
     loadFromEEPROM();
