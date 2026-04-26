@@ -170,11 +170,6 @@ void setup() {
 void loop() {
   
   esc.listenForMessages();
-  if (esc.anyFrameReceived) {
-    diagFlash = true;
-    diagFlashMs = millis();
-    esc.anyFrameReceived = false;
-  }
   if (esc.configFrameAvailable) {
     handleConfigCommand(esc.configFrameData, esc.configFrameLen);
     esc.configFrameAvailable = false;
