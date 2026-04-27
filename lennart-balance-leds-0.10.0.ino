@@ -112,10 +112,6 @@ bool wasMovingState = false;
 int currentBrightness = STARTUP_BRIGHTNESS;
 int targetBrightness = STARTUP_BRIGHTNESS;
 
-// Diagnostic: magenta footpad flash when handleConfigCommand fires (600ms)
-bool diagFlash = false;
-unsigned long diagFlashMs = 0;
-
 // Footpad knight rider animation variables
 int footpadCurrentLEDIndex = 0;
 int footpadAnimationDirFlag = 1;
@@ -259,15 +255,6 @@ void loop() {
   if (millis() - lastLEDUpdateMillis >= LED_UPDATE_INTERVAL) {
     currentBrightness += constrain(targetBrightness - currentBrightness, -5, 5);
     FastLED.setBrightness(currentBrightness);
-    if (diagFlash) {
-      if (millis() - diagFlashMs < 600) {
-        for (int i = 0; i < NUM_LEDS; i++) {
-          forward_leds[i] = (i % 2 == 0) ? CRGB(255, 0, 0) : CRGB(0, 0, 0);
-        }
-      } else {
-        diagFlash = false;
-      }
-    }
     FastLED.show();
     lastLEDUpdateMillis = millis();
   }
@@ -641,8 +628,6 @@ void footpadDutyCycleIndicator() {
 // === LencoLED config command handler ===
 
 void handleConfigCommand(uint8_t* data, uint8_t len) {
-  diagFlash = true;
-  diagFlashMs = millis();
   if (len < 1) return;
   switch (data[0]) {
     case 0x01: // CMD_SET_COLOR

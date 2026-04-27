@@ -50,22 +50,6 @@ class ESC {
       mcp2515.reset();
       mcp2515.setBitrate(CAN_500KBPS, MCP_8MHZ);
 
-      // Loopback self-test: send a frame to ourselves in loopback mode.
-      // If received, configFrameAvailable fires handleConfigCommand on first loop()
-      // iteration → diagnostic flash confirms MCP2515 + receive path both work.
-      mcp2515.setLoopbackMode();
-      struct can_frame loopFrame;
-      loopFrame.can_id = NODE_CAN_ID;
-      loopFrame.can_dlc = 1;
-      loopFrame.data[0] = 0x05; // CMD_READ_ALL — harmless stub, won't change LED state
-      mcp2515.sendMessage(&loopFrame);
-      delay(5);
-      if (mcp2515.readMessage(&rxFrame) == MCP2515::ERROR_OK) {
-        memcpy(configFrameData, rxFrame.data, rxFrame.can_dlc);
-        configFrameLen = rxFrame.can_dlc;
-        configFrameAvailable = true;
-      }
-
       mcp2515.setNormalMode();
     }
 
