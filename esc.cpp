@@ -1,3 +1,4 @@
+#pragma once
 #include <Arduino.h>
 #include <SPI.h>
 #include "mcp2515.h"
@@ -44,6 +45,14 @@ class ESC {
     uint8_t configFrameLen = 0;
 
     ESC() : mcp2515(10) {} // CS pin for MCP2515
+
+    bool sendFrame(uint32_t id, uint8_t* data, uint8_t len) {
+      struct can_frame msg;
+      msg.can_id = id;
+      msg.can_dlc = len;
+      memcpy(msg.data, data, len);
+      return mcp2515.sendMessage(&msg) == MCP2515::ERROR_OK;
+    }
 
     void setup() {
       SPI.begin();
