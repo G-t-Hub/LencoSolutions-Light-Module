@@ -133,13 +133,20 @@ void loop() {
 
   esc.listenForMessages();
   if (esc.configFrameAvailable) {
-    if (esc.configFrameData[0] == 5) {
-      // CMD_READ_ALL received — flash forward LEDs magenta to confirm CAN frame arrived
+    bool isReadAll = (esc.configFrameData[0] == 5);
+    if (isReadAll) {
+      // Magenta = CMD_READ_ALL received via CAN
       fill_solid(forward_leds, NUM_LEDS, CRGB(255, 0, 255));
       FastLED.show();
       delay(600);
     }
     lencoLED.handleCommand(esc.configFrameData, esc.configFrameLen, esc);
+    if (isReadAll) {
+      // Cyan = sendVescCustomData completed (all 7 chunks sent)
+      fill_solid(forward_leds, NUM_LEDS, CRGB(0, 255, 255));
+      FastLED.show();
+      delay(600);
+    }
     esc.configFrameAvailable = false;
   }
 
