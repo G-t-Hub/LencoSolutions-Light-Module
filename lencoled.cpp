@@ -80,12 +80,15 @@ public:
                     saveSettings(esc.footpadThreshold);
                 }
                 break;
-            case 0x04: // CMD_SET_LED_STATE — runtime toggle; persist flag in data[2]
+            case 0x04: // CMD_SET_LED_STATE
+                // persist=0: apply to current runtime state only (do not touch EEPROM)
+                // persist=1: save boot state to EEPROM only (do not change current runtime state)
                 if (len >= 2) {
-                    ledEnabled = (data[1] == 1);
                     if (len >= 3 && data[2] == 1) {
                         startupLedState = data[1];
                         EEPROM.update(EEPROM_LED_STATE_ADDR, startupLedState);
+                    } else {
+                        ledEnabled = (data[1] == 1);
                     }
                 }
                 break;
