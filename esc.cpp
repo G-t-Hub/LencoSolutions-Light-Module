@@ -11,8 +11,7 @@ typedef enum {
   CAN_PACKET_PROCESS_SHORT_BUFFER = 8,
   CAN_PACKET_FILL_RX_BUFFER = 5,
   CAN_PACKET_PROCESS_RX_BUFFER = 7,
-  CAN_PACKET_STATUS_6 = 58,         // ADC values broadcast
-  CAN_PACKET_LENCOLED_CONFIG = 240  // LencoLED → Arduino config commands (240 = outside VESC range)
+  CAN_PACKET_STATUS_6 = 58  // ADC values broadcast
 } CAN_PACKET_ID;
 
 class ESC {
@@ -38,27 +37,18 @@ class ESC {
     bool footpadTriggered = false;
     double footpadThreshold = 0.30;
 
-    // Buffered config frame from VESC Express (standard CAN frame to NODE_CAN_ID)
-    // The .ino polls configFrameAvailable and handles command interpretation.
-    bool configFrameAvailable = false;
-    uint8_t configFrameData[8];
-    uint8_t configFrameLen = 0;
+    // Generic buffer for unrecognised frames addressed to this node.
+    // Application layer polls appFrameAvailable and interprets appFrameData.
+    bool appFrameAvailable = false;
+    uint8_t appFrameData[8];
+    uint8_t appFrameLen = 0;
 
     ESC() : mcp2515(10) {} // CS pin for MCP2515
-
-    bool sendFrame(uint32_t id, uint8_t* data, uint8_t len) {
-      struct can_frame msg;
-      msg.can_id = id;
-      msg.can_dlc = len;
-      memcpy(msg.data, data, len);
-      return mcp2515.sendMessage(&msg) == MCP2515::ERROR_OK;
-    }
 
     void setup() {
       SPI.begin();
       mcp2515.reset();
       mcp2515.setBitrate(CAN_500KBPS, MCP_8MHZ);
-
       mcp2515.setNormalMode();
     }
 
@@ -88,7 +78,6 @@ class ESC {
           }
         }
         else if (id == (0x80000000 + ((uint16_t)CAN_PACKET_PROCESS_RX_BUFFER << 8) + NODE_CAN_ID)) {
-          // Check if this is a realtime data response
           if (rxLen >= 17 && rxData[0] == 0x32) {
             parseRealtimeData();
           }
@@ -97,25 +86,17 @@ class ESC {
         else if (id == (0x80000000 + ((uint16_t)CAN_PACKET_STATUS_6 << 8) + ESC_CAN_ID)) {
           parseStatus6();
         }
-        else if ((id & CAN_EFF_FLAG) &&
-                 ((id & 0xFFFF) == (((uint32_t)CAN_PACKET_LENCOLED_CONFIG << 8) | NODE_CAN_ID))) {
-          // Extended frame from VESC Express — config command
-          // Match only low 16 bits (packet_type << 8 | node_id); upper bits may carry source node ID
-          memcpy(configFrameData, rxFrame.data, rxFrame.can_dlc);
-          configFrameLen = rxFrame.can_dlc;
-          configFrameAvailable = true;
-        }
         else if (id == NODE_CAN_ID) {
-          // Standard frame fallback — kept for compatibility
-          memcpy(configFrameData, rxFrame.data, rxFrame.can_dlc);
-          configFrameLen = rxFrame.can_dlc;
-          configFrameAvailable = true;
+          // Standard frame to this node — pass to application layer
+          memcpy(appFrameData, rxFrame.data, rxFrame.can_dlc);
+          appFrameLen = rxFrame.can_dlc;
+          appFrameAvailable = true;
         }
         else if ((id & CAN_EFF_FLAG) && ((id & 0xFF) == NODE_CAN_ID)) {
-          // Extended frame to NODE_CAN_ID with unrecognized packet type — catch-all
-          memcpy(configFrameData, rxFrame.data, rxFrame.can_dlc);
-          configFrameLen = rxFrame.can_dlc;
-          configFrameAvailable = true;
+          // Extended frame to this node — pass to application layer
+          memcpy(appFrameData, rxFrame.data, rxFrame.can_dlc);
+          appFrameLen = rxFrame.can_dlc;
+          appFrameAvailable = true;
         }
       }
     }
@@ -155,20 +136,16 @@ class ESC {
               dataReady = true;
             }
             rxLen = 0;
-          } else if ((id & CAN_EFF_FLAG) &&
-                     ((id & 0xFFFF) == (((uint32_t)CAN_PACKET_LENCOLED_CONFIG << 8) | NODE_CAN_ID))) {
-            memcpy(configFrameData, rxFrame.data, rxFrame.can_dlc);
-            configFrameLen = rxFrame.can_dlc;
-            configFrameAvailable = true;
           } else if (id == NODE_CAN_ID) {
-            memcpy(configFrameData, rxFrame.data, rxFrame.can_dlc);
-            configFrameLen = rxFrame.can_dlc;
-            configFrameAvailable = true;
+            // Standard frame to this node — pass to application layer
+            memcpy(appFrameData, rxFrame.data, rxFrame.can_dlc);
+            appFrameLen = rxFrame.can_dlc;
+            appFrameAvailable = true;
           } else if ((id & CAN_EFF_FLAG) && ((id & 0xFF) == NODE_CAN_ID)) {
-            // Extended frame to NODE_CAN_ID with unrecognized packet type — catch-all
-            memcpy(configFrameData, rxFrame.data, rxFrame.can_dlc);
-            configFrameLen = rxFrame.can_dlc;
-            configFrameAvailable = true;
+            // Extended frame to this node — pass to application layer
+            memcpy(appFrameData, rxFrame.data, rxFrame.can_dlc);
+            appFrameLen = rxFrame.can_dlc;
+            appFrameAvailable = true;
           }
         }
       }
