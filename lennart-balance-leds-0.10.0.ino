@@ -491,11 +491,13 @@ void singleFootpadTriggeredStartupLEDs() {
 void footpadKnightRider() {
   const int ridingWidth = max(1, NUM_LEDS_FOOTPAD / 3);
   const unsigned long animationDelay = max(20UL, 50UL * NUM_LEDS / NUM_LEDS_FOOTPAD);
+  const int travel = max(1, NUM_LEDS_FOOTPAD - ridingWidth - 2);
+  const uint8_t fadeAmount = (uint8_t)constrain(600 / travel, 50, 220);
 
   if (millis() - lastFootpadKnightRiderUpdate >= animationDelay) {
 
     for (int i = 0; i < NUM_LEDS_FOOTPAD; i++) {
-      footpad_leds[i].fadeToBlackBy(60);
+      footpad_leds[i].fadeToBlackBy(fadeAmount);
     }
 
     footpadCurrentLEDIndex = constrain(footpadCurrentLEDIndex, 0, NUM_LEDS_FOOTPAD - ridingWidth - 2);
