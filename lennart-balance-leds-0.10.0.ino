@@ -48,6 +48,8 @@ double globalDutyCycle = 0.0;
 // Polling configuration
 const unsigned long CAN_POLLING_INTERVAL = 100; // every 100ms
 unsigned long lastCanPollTime = 0;
+const unsigned long LCM_POLL_INTERVAL = 500;
+unsigned long lastLcmPollTime = 0;
 
 // LED & animation states
 unsigned long lastKnightRiderUpdate = 0;
@@ -135,6 +137,16 @@ void loop() {
   if (esc.appFrameAvailable) {
     lencoLED.handleCommand(esc.appFrameData, esc.appFrameLen, esc);
     esc.appFrameAvailable = false;
+  }
+  if (esc.lcmPollAvailable) {
+    lencoLED.handleLcmPoll(esc.lcmPollData, esc.lcmPollLen);
+    esc.lcmPollAvailable = false;
+  }
+
+  // === Periodic LCM poll (Refloat light control) ===
+  if (millis() - lastLcmPollTime >= LCM_POLL_INTERVAL) {
+    esc.sendLcmPoll();
+    lastLcmPollTime = millis();
   }
 
   // === Periodic CAN polling ===

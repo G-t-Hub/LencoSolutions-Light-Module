@@ -43,6 +43,11 @@ class ESC {
     uint8_t appFrameData[8];
     uint8_t appFrameLen = 0;
 
+    // LCM poll response buffer (assembled from multi-frame CAN, decoded by LencoLED).
+    bool lcmPollAvailable = false;
+    uint8_t lcmPollData[16];
+    uint8_t lcmPollLen = 0;
+
     ESC() : mcp2515(10) {} // CS pin for MCP2515
 
     void setup() {
@@ -50,6 +55,18 @@ class ESC {
       mcp2515.reset();
       mcp2515.setBitrate(CAN_500KBPS, MCP_8MHZ);
       mcp2515.setNormalMode();
+    }
+
+    void sendLcmPoll() {
+      struct can_frame msg;
+      msg.can_id  = (uint32_t(0x8000) << 16) | (uint16_t(CAN_PACKET_PROCESS_SHORT_BUFFER) << 8) | ESC_CAN_ID;
+      msg.can_dlc = 5;
+      msg.data[0] = NODE_CAN_ID;
+      msg.data[1] = 0x00;
+      msg.data[2] = 36;   // COMM_CUSTOM_APP_DATA
+      msg.data[3] = 101;  // Refloat package ID
+      msg.data[4] = 24;   // COMMAND_LCM_POLL
+      mcp2515.sendMessage(&msg);
     }
 
     // Called periodically (e.g. every 100ms)
@@ -80,6 +97,11 @@ class ESC {
         else if (id == (0x80000000 + ((uint16_t)CAN_PACKET_PROCESS_RX_BUFFER << 8) + NODE_CAN_ID)) {
           if (rxLen >= 17 && rxData[0] == 0x32) {
             parseRealtimeData();
+          } else if (rxLen >= 13 && rxData[0] == 36 && rxData[1] == 101 && rxData[2] == 24) {
+            uint8_t copyLen = min(rxLen, (uint8_t)16);
+            memcpy(lcmPollData, rxData, copyLen);
+            lcmPollLen = copyLen;
+            lcmPollAvailable = true;
           }
           rxLen = 0;
         }
@@ -134,6 +156,11 @@ class ESC {
             if (rxLen >= 17 && rxData[0] == 0x32) {
               parseRealtimeData();
               dataReady = true;
+            } else if (rxLen >= 13 && rxData[0] == 36 && rxData[1] == 101 && rxData[2] == 24) {
+              uint8_t copyLen = min(rxLen, (uint8_t)16);
+              memcpy(lcmPollData, rxData, copyLen);
+              lcmPollLen = copyLen;
+              lcmPollAvailable = true;
             }
             rxLen = 0;
           } else if (id == NODE_CAN_ID) {

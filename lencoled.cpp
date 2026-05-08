@@ -4,6 +4,12 @@
 // CAN packet type used by VESC Express to send LencoLED config commands to this node
 #define CAN_PACKET_LENCOLED_CONFIG 240
 
+// Refloat LCM poll response layout (indices into lcmPollData[])
+// [0]=COMM_CUSTOM_APP_DATA(36), [1]=pkg(101), [2]=cmd(24),
+// [3]=state, [4]=fault, [5]=duty/pitch, [6-7]=erpm, [8-9]=current,
+// [10-11]=voltage, [12]=brightness, [13]=brightness_idle, [14]=status_brightness
+#define LCM_POLL_BRIGHTNESS_IDX 12
+
 // EEPROM layout (45 bytes total)
 #define EEPROM_MAGIC_ADDR      0  // uint16: 0xABCE if initialized
 #define EEPROM_COLORS_ADDR     2  // 36 bytes: 12 groups × 3 (RGB)
@@ -44,6 +50,12 @@ public:
         } else {
             loadFromEEPROM(esc);
         }
+    }
+
+    // Call from loop() when esc.lcmPollAvailable is true
+    void handleLcmPoll(uint8_t* data, uint8_t len) {
+        if (len <= LCM_POLL_BRIGHTNESS_IDX) return;
+        ledEnabled = (data[LCM_POLL_BRIGHTNESS_IDX] > 0);
     }
 
     // Call from loop() when esc.appFrameAvailable is true
