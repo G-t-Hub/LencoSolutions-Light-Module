@@ -1,3 +1,4 @@
+#pragma once
 #include <Arduino.h>
 #include <SPI.h>
 #include "mcp2515.h"
@@ -29,12 +30,23 @@ class ESC {
     // ADC vars (normalized 0.0-1.0 from STATUS_6)
     double adc1 = 0.0;
     double adc2 = 0.0;
-  
+
     bool adcDataAvailable = false;
 
     // Footpad detection
     bool footpadTriggered = false;
-    double footpadThreshold = 0.30;  // Adjust based on your sensor (0.0-1.0)
+    double footpadThreshold = 0.30;
+
+    // Generic buffer for unrecognised frames addressed to this node.
+    // Application layer polls appFrameAvailable and interprets appFrameData.
+    bool appFrameAvailable = false;
+    uint8_t appFrameData[8];
+    uint8_t appFrameLen = 0;
+
+    // LCM poll response buffer (assembled from multi-frame CAN, decoded by LencoLED).
+    bool lcmPollAvailable = false;
+    uint8_t lcmPollData[16];
+    uint8_t lcmPollLen = 0;
 
     ESC() : mcp2515(10) {} // CS pin for MCP2515
 
@@ -43,6 +55,18 @@ class ESC {
       mcp2515.reset();
       mcp2515.setBitrate(CAN_500KBPS, MCP_8MHZ);
       mcp2515.setNormalMode();
+    }
+
+    void sendLcmPoll() {
+      struct can_frame msg;
+      msg.can_id  = (uint32_t(0x8000) << 16) | (uint16_t(CAN_PACKET_PROCESS_SHORT_BUFFER) << 8) | ESC_CAN_ID;
+      msg.can_dlc = 5;
+      msg.data[0] = NODE_CAN_ID;
+      msg.data[1] = 0x00;
+      msg.data[2] = 36;   // COMM_CUSTOM_APP_DATA
+      msg.data[3] = 101;  // Refloat package ID
+      msg.data[4] = 24;   // COMMAND_LCM_POLL
+      mcp2515.sendMessage(&msg);
     }
 
     // Called periodically (e.g. every 100ms)
@@ -57,11 +81,11 @@ class ESC {
 
       // Read ALL pending messages to avoid buffer overflow
       for (int i = 0; i < 10; i++) {  // Read up to 10 messages per call
-        
-        if (mcp2515.readMessage(&rxFrame) != MCP2515::ERROR_OK) { 
+
+        if (mcp2515.readMessage(&rxFrame) != MCP2515::ERROR_OK) {
           break;  // No more messages
         }
-      
+
         // Non-blocking read — only parses known message types
         uint32_t id = rxFrame.can_id;
         if (id == (0x80000000 + ((uint16_t)CAN_PACKET_FILL_RX_BUFFER << 8) + NODE_CAN_ID)) {
@@ -69,17 +93,32 @@ class ESC {
             memcpy(&rxData[rxFrame.data[0]], &rxFrame.data[1], rxFrame.can_dlc - 1);
             rxLen += rxFrame.can_dlc - 1;
           }
-        } 
+        }
         else if (id == (0x80000000 + ((uint16_t)CAN_PACKET_PROCESS_RX_BUFFER << 8) + NODE_CAN_ID)) {
-          // Check if this is a realtime data response
           if (rxLen >= 17 && rxData[0] == 0x32) {
             parseRealtimeData();
+          } else if (rxLen >= 13 && rxData[0] == 36 && rxData[1] == 101 && rxData[2] == 24) {
+            uint8_t copyLen = min(rxLen, (uint8_t)16);
+            memcpy(lcmPollData, rxData, copyLen);
+            lcmPollLen = copyLen;
+            lcmPollAvailable = true;
           }
-          rxLen = 0;    
+          rxLen = 0;
         }
-          // Handle STATUS_6 messages with ADC data
         else if (id == (0x80000000 + ((uint16_t)CAN_PACKET_STATUS_6 << 8) + ESC_CAN_ID)) {
           parseStatus6();
+        }
+        else if (id == NODE_CAN_ID) {
+          // Standard frame to this node — pass to application layer
+          memcpy(appFrameData, rxFrame.data, rxFrame.can_dlc);
+          appFrameLen = rxFrame.can_dlc;
+          appFrameAvailable = true;
+        }
+        else if ((id & CAN_EFF_FLAG) && ((id & 0xFF) == NODE_CAN_ID)) {
+          // Extended frame to this node — pass to application layer
+          memcpy(appFrameData, rxFrame.data, rxFrame.can_dlc);
+          appFrameLen = rxFrame.can_dlc;
+          appFrameAvailable = true;
         }
       }
     }
@@ -117,8 +156,23 @@ class ESC {
             if (rxLen >= 17 && rxData[0] == 0x32) {
               parseRealtimeData();
               dataReady = true;
+            } else if (rxLen >= 13 && rxData[0] == 36 && rxData[1] == 101 && rxData[2] == 24) {
+              uint8_t copyLen = min(rxLen, (uint8_t)16);
+              memcpy(lcmPollData, rxData, copyLen);
+              lcmPollLen = copyLen;
+              lcmPollAvailable = true;
             }
             rxLen = 0;
+          } else if (id == NODE_CAN_ID) {
+            // Standard frame to this node — pass to application layer
+            memcpy(appFrameData, rxFrame.data, rxFrame.can_dlc);
+            appFrameLen = rxFrame.can_dlc;
+            appFrameAvailable = true;
+          } else if ((id & CAN_EFF_FLAG) && ((id & 0xFF) == NODE_CAN_ID)) {
+            // Extended frame to this node — pass to application layer
+            memcpy(appFrameData, rxFrame.data, rxFrame.can_dlc);
+            appFrameLen = rxFrame.can_dlc;
+            appFrameAvailable = true;
           }
         }
       }
@@ -149,11 +203,10 @@ class ESC {
 
       // Check current footpad state based on threshold
       bool currentState = (adc1 > footpadThreshold || adc2 > footpadThreshold);
-      
+
       // Update immediately - let the application handle debouncing if needed
       footpadTriggered = currentState;
-      
+
       adcDataAvailable = true;
     }
 };
-

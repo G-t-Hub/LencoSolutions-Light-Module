@@ -4,8 +4,6 @@
 
 #define PLAY_STARTUP true
 #define DUTY_CYCLE_ALERT 0.75 // 0 to disable
-#define LOW_VOLTAGE 58.9 // 0 to disable
-#define FULL_VOLTAGE 79.8 // Voltage of battery when fully charged
 #define LOW_VOLTAGE_INTERVAL 5 * 1000 // every 30 seconds
 
 class BalanceBeeper {
@@ -53,7 +51,7 @@ class BalanceBeeper {
       }
     }
 
-    void loop(double dutyCycle, double erpm, double voltage){
+    void loop(double dutyCycle, double erpm, double voltage, double lowVoltage){
       // Only update buzzer at controlled intervals to prevent fast loop interference
       if (millis() - lastBuzzerUpdateMillis >= BUZZER_UPDATE_INTERVAL) {
         beeper.loop();
@@ -71,7 +69,7 @@ class BalanceBeeper {
       }
 
       // Low voltage - LOWER PRIORITY (only if no higher priority alert is playing)
-      if(voltage < LOW_VOLTAGE && LOW_VOLTAGE > 0 && 
+      if(voltage < lowVoltage && lowVoltage > 0 &&
          lastLowVoltageMillis + LOW_VOLTAGE_INTERVAL < millis() &&
          (currentPriority == PRIORITY_NONE || currentPriority >= PRIORITY_LOW_VOLTAGE)){
         beeper.queueSad();
