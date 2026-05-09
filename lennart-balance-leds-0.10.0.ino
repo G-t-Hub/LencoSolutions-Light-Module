@@ -2,14 +2,13 @@
 #include <FastLED.h>
 #include <EEPROM.h>
 
-#define NUM_LEDS 17
-#define NUM_LEDS_FOOTPAD 10
-
 #undef SPI_CLOCK     // Prevent FastLED/MCP2515 macro conflict
 
 #include "balance_beeper.cpp"
 #include "esc.cpp"
 #include "lencoled.cpp"
+
+const uint8_t MAX_LEDS_PER_STRIP = LencoLED::MAX_LED_COUNT;
 
 #define BATTERY_INDICATOR_DURATION 5000 // 5 seconds
 #define STARTUP_ANIMATION_DURATION 5000 // 5 seconds
@@ -32,9 +31,9 @@
 #define BRAKE_ON_DEBOUNCE_COUNT 3
 #define BRAKE_OFF_DEBOUNCE_COUNT 3
 
-CRGB forward_leds[NUM_LEDS];
-CRGB reverse_leds[NUM_LEDS];
-CRGB footpad_leds[NUM_LEDS_FOOTPAD];
+CRGB forward_leds[MAX_LEDS_PER_STRIP];
+CRGB reverse_leds[MAX_LEDS_PER_STRIP];
+CRGB footpad_leds[MAX_LEDS_PER_STRIP];
 
 ESC esc;
 BalanceBeeper balanceBeeper;
@@ -100,6 +99,7 @@ void checkBraking();
 void footpadKnightRider();
 void footpadDutyCycleIndicator();
 void requestLEDFade(bool forwardReverse, bool footpad);
+void clearInactiveLEDs();
 
 void setup() {
   // Serial.begin(115200);
@@ -107,11 +107,11 @@ void setup() {
   lencoLED.init(esc);
   balanceBeeper.setup();
 
-  FastLED.addLeds<WS2812B, FORWARD_PIN, GRB>(forward_leds, NUM_LEDS)
+  FastLED.addLeds<WS2812B, FORWARD_PIN, GRB>(forward_leds, MAX_LEDS_PER_STRIP)
       .setCorrection(TypicalLEDStrip);
-  FastLED.addLeds<WS2812B, REVERSE_PIN, GRB>(reverse_leds, NUM_LEDS)
+  FastLED.addLeds<WS2812B, REVERSE_PIN, GRB>(reverse_leds, MAX_LEDS_PER_STRIP)
       .setCorrection(TypicalLEDStrip);
-  FastLED.addLeds<WS2812B, FOOTPAD_PIN, GRB>(footpad_leds, NUM_LEDS_FOOTPAD)
+  FastLED.addLeds<WS2812B, FOOTPAD_PIN, GRB>(footpad_leds, MAX_LEDS_PER_STRIP)
       .setCorrection(TypicalLEDStrip);
 
   FastLED.setMaxPowerInVoltsAndMilliamps(5, 500);
@@ -119,12 +119,15 @@ void setup() {
   FastLED.clear();
 
   // Initial LED pattern
-  for (int i = 0; i < NUM_LEDS; i++) {
+  for (int i = 0; i < lencoLED.numLedsForward; i++) {
     forward_leds[i] = CRGB(lencoLED.ledColors[0][0], lencoLED.ledColors[0][1], lencoLED.ledColors[0][2]);
+  }
+  for (int i = 0; i < lencoLED.numLedsReverse; i++) {
     reverse_leds[i] = (i % 2 == 0)
         ? CRGB(lencoLED.ledColors[1][0], lencoLED.ledColors[1][1], lencoLED.ledColors[1][2])
         : CRGB(0, 0, 0);
   }
+  clearInactiveLEDs();
 
   startupBeginMS = millis();
 
@@ -200,19 +203,21 @@ void loop() {
   }
 
   if (!lencoLED.ledEnabled) {
-    fill_solid(forward_leds, NUM_LEDS, CRGB::Black);
-    fill_solid(reverse_leds, NUM_LEDS, CRGB::Black);
+    fill_solid(forward_leds, lencoLED.numLedsForward, CRGB::Black);
+    fill_solid(reverse_leds, lencoLED.numLedsReverse, CRGB::Black);
   }
 
   if (lencoLED.ledEnabled && ledFadeActive) {
     if (fadeForwardReverse) {
-      for (int i = 0; i < NUM_LEDS; i++) {
+      for (int i = 0; i < lencoLED.numLedsForward; i++) {
         forward_leds[i].fadeToBlackBy(60);
+      }
+      for (int i = 0; i < lencoLED.numLedsReverse; i++) {
         reverse_leds[i].fadeToBlackBy(60);
       }
     }
     if (fadeFootpad) {
-      for (int i = 0; i < NUM_LEDS_FOOTPAD; i++) {
+      for (int i = 0; i < lencoLED.numLedsFootpad; i++) {
         footpad_leds[i].fadeToBlackBy(60);
       }
     }
@@ -220,10 +225,11 @@ void loop() {
     processStartupAction();
   } else if (!ledFadeActive && movingState) {
     if (lencoLED.ledEnabled) {
-      knightRider(lencoLED.ledColors[0][0], lencoLED.ledColors[0][1], lencoLED.ledColors[0][2], max(1, NUM_LEDS / 3));
+      int rideLedCount = (direction == FORWARD) ? lencoLED.numLedsForward : lencoLED.numLedsReverse;
+      knightRider(lencoLED.ledColors[0][0], lencoLED.ledColors[0][1], lencoLED.ledColors[0][2], max(1, rideLedCount / 3));
       footpadDutyCycleIndicator();
     } else {
-      fill_solid(footpad_leds, NUM_LEDS_FOOTPAD, CRGB::Black);
+      fill_solid(footpad_leds, lencoLED.numLedsFootpad, CRGB::Black);
     }
   }
 
@@ -236,6 +242,7 @@ void loop() {
   // === Throttled LED update ===
   if (millis() - lastLEDUpdateMillis >= LED_UPDATE_INTERVAL) {
     currentBrightness += constrain(targetBrightness - currentBrightness, -5, 5);
+    clearInactiveLEDs();
     FastLED.setBrightness(currentBrightness);
     FastLED.show();
     lastLEDUpdateMillis = millis();
@@ -269,12 +276,13 @@ void checkBraking() {
   if (!lencoLED.ledEnabled) return;
 
   CRGB *leds_const = (direction == FORWARD) ? reverse_leds : forward_leds;
+  int ledCount = (direction == FORWARD) ? lencoLED.numLedsReverse : lencoLED.numLedsForward;
   if (isBraking) {
-    for (int i = 0; i < NUM_LEDS; i++) {
+    for (int i = 0; i < ledCount; i++) {
       leds_const[i].setRGB(lencoLED.ledColors[1][0], lencoLED.ledColors[1][1], lencoLED.ledColors[1][2]);
     }
   } else {
-    for (int i = 0; i < NUM_LEDS; i++) {
+    for (int i = 0; i < ledCount; i++) {
       if (i % 2 == 0)
         leds_const[i].setRGB(lencoLED.ledColors[1][0], lencoLED.ledColors[1][1], lencoLED.ledColors[1][2]);
       else
@@ -285,13 +293,17 @@ void checkBraking() {
 
 void knightRider(int red, int green, int blue, int ridingWidth) {
   CRGB *leds = (direction == FORWARD) ? forward_leds : reverse_leds;
+  int ledCount = (direction == FORWARD) ? lencoLED.numLedsForward : lencoLED.numLedsReverse;
+  ridingWidth = constrain(ridingWidth, 1, max(1, ledCount - 2));
+  int travel = max(1, ledCount - ridingWidth - 2);
   if (!leds) return;
 
   const long IDLE_ERPM = 200;
   if (abs(globalErpm) < IDLE_ERPM) {
-    for (int i = 0; i < NUM_LEDS; i++) {
+    for (int i = 0; i < ledCount; i++) {
       leds[i].fadeToBlackBy(40);
     }
+    clearInactiveLEDs();
     FastLED.show();
     return;
   }
@@ -302,15 +314,15 @@ void knightRider(int red, int green, int blue, int ridingWidth) {
 
   if (millis() - lastKnightRiderUpdate >= delayDuration) {
 
-    for (int i = 0; i < NUM_LEDS; i++) {
+    for (int i = 0; i < ledCount; i++) {
       leds[i].fadeToBlackBy(60);
     }
 
-    currentLEDIndex = constrain(currentLEDIndex, 0, NUM_LEDS - ridingWidth - 2);
+    currentLEDIndex = constrain(currentLEDIndex, 0, travel);
 
     for (int j = -2; j < ridingWidth + 2; j++) {
       int idx = currentLEDIndex + j;
-      if (idx >= 0 && idx < NUM_LEDS) {
+      if (idx >= 0 && idx < ledCount) {
         int fadeFactor;
         if (j < 0 || j >= ridingWidth) fadeFactor = 30;
         else fadeFactor = 100;
@@ -325,12 +337,13 @@ void knightRider(int red, int green, int blue, int ridingWidth) {
 
     currentLEDIndex += animationDirFlag;
 
-    if (currentLEDIndex >= NUM_LEDS - ridingWidth - 2) {
+    if (currentLEDIndex >= travel) {
       animationDirFlag = -1;
     } else if (currentLEDIndex <= 0) {
       animationDirFlag = 1;
     }
 
+    clearInactiveLEDs();
     FastLED.show();
     lastKnightRiderUpdate = millis();
   }
@@ -351,7 +364,7 @@ void processStartupAction() {
 
   // Animation complete — remaining footpad patterns only show when LEDs are enabled.
   if (!lencoLED.ledEnabled) {
-    fill_solid(footpad_leds, NUM_LEDS_FOOTPAD, CRGB::Black);
+    fill_solid(footpad_leds, lencoLED.numLedsFootpad, CRGB::Black);
     return;
   }
 
@@ -402,10 +415,10 @@ void startupAnimation() {
     return;
   }
 
-  int numLeds = map(elapsed, 0, STARTUP_ANIMATION_DURATION, 0, NUM_LEDS_FOOTPAD);
-  numLeds = constrain(numLeds, 0, NUM_LEDS_FOOTPAD);
+  int numLeds = map(elapsed, 0, STARTUP_ANIMATION_DURATION, 0, lencoLED.numLedsFootpad);
+  numLeds = constrain(numLeds, 0, lencoLED.numLedsFootpad);
 
-  for (int i = 0; i < NUM_LEDS_FOOTPAD; i++) {
+  for (int i = 0; i < lencoLED.numLedsFootpad; i++) {
     if (i < numLeds) {
       footpad_leds[i] = CRGB(lencoLED.ledColors[2][0], lencoLED.ledColors[2][1], lencoLED.ledColors[2][2]);
     } else {
@@ -416,24 +429,24 @@ void startupAnimation() {
 
 void staticStartupLEDs() {
   if (!lencoLED.ledEnabled) return;
-  for (int i = 0; i < NUM_LEDS; i++) {
-    if (direction == FORWARD) {
-      forward_leds[i] = CRGB(lencoLED.ledColors[0][0], lencoLED.ledColors[0][1], lencoLED.ledColors[0][2]);
-      reverse_leds[i] = (i % 2 == 0)
-          ? CRGB(lencoLED.ledColors[1][0], lencoLED.ledColors[1][1], lencoLED.ledColors[1][2])
-          : CRGB(0, 0, 0);
-    } else {
-      reverse_leds[i] = CRGB(lencoLED.ledColors[0][0], lencoLED.ledColors[0][1], lencoLED.ledColors[0][2]);
-      forward_leds[i] = (i % 2 == 0)
-          ? CRGB(lencoLED.ledColors[1][0], lencoLED.ledColors[1][1], lencoLED.ledColors[1][2])
-          : CRGB(0, 0, 0);
-    }
+  CRGB *frontLeds = (direction == FORWARD) ? forward_leds : reverse_leds;
+  CRGB *rearLeds = (direction == FORWARD) ? reverse_leds : forward_leds;
+  int frontCount = (direction == FORWARD) ? lencoLED.numLedsForward : lencoLED.numLedsReverse;
+  int rearCount = (direction == FORWARD) ? lencoLED.numLedsReverse : lencoLED.numLedsForward;
+
+  for (int i = 0; i < frontCount; i++) {
+    frontLeds[i] = CRGB(lencoLED.ledColors[0][0], lencoLED.ledColors[0][1], lencoLED.ledColors[0][2]);
+  }
+  for (int i = 0; i < rearCount; i++) {
+    rearLeds[i] = (i % 2 == 0)
+        ? CRGB(lencoLED.ledColors[1][0], lencoLED.ledColors[1][1], lencoLED.ledColors[1][2])
+        : CRGB(0, 0, 0);
   }
 }
 
 void lowVoltageWarningLEDs() {
   bool flashOn = (millis() / 250) % 2 == 0;
-  for (int i = 0; i < NUM_LEDS_FOOTPAD; i++) {
+  for (int i = 0; i < lencoLED.numLedsFootpad; i++) {
     footpad_leds[i] = flashOn ? CRGB(255, 0, 0) : CRGB(0, 0, 0);
   }
 }
@@ -447,7 +460,7 @@ void requestLEDFade(bool forwardReverse, bool footpad) {
 
 void warningLEDs() {
   bool flashOn = (millis() / 400) % 2 == 0;
-  for (int i = 0; i < NUM_LEDS_FOOTPAD; i++) {
+  for (int i = 0; i < lencoLED.numLedsFootpad; i++) {
     footpad_leds[i] = flashOn ? CRGB(255, 80, 0) : CRGB(0, 0, 0);
   }
 }
@@ -471,8 +484,8 @@ void batteryPercentStartupLEDs() {
     r = lencoLED.ledColors[3][0]; g = lencoLED.ledColors[3][1]; b = lencoLED.ledColors[3][2];
   }
 
-  int numLedsLit = (int)(batteryVoltagePercentage * NUM_LEDS_FOOTPAD);
-  for (int i = 0; i < NUM_LEDS_FOOTPAD; i++) {
+  int numLedsLit = (int)(batteryVoltagePercentage * lencoLED.numLedsFootpad);
+  for (int i = 0; i < lencoLED.numLedsFootpad; i++) {
     if (i < numLedsLit) {
       footpad_leds[i].setRGB(r, g, b);
     } else {
@@ -482,16 +495,16 @@ void batteryPercentStartupLEDs() {
 }
 
 void singleFootpadTriggeredStartupLEDs() {
-  const int half = NUM_LEDS_FOOTPAD / 2;
+  const int half = lencoLED.numLedsFootpad / 2;
   if (esc.adc1 > esc.footpadThreshold) {
-    for (int i = 0; i < NUM_LEDS_FOOTPAD; i++) {
+    for (int i = 0; i < lencoLED.numLedsFootpad; i++) {
       if (i < half)
         footpad_leds[i].setRGB(lencoLED.ledColors[7][0], lencoLED.ledColors[7][1], lencoLED.ledColors[7][2]);
       else
         footpad_leds[i].setRGB(0, 0, 0);
     }
   } else if (esc.adc2 > esc.footpadThreshold) {
-    for (int i = 0; i < NUM_LEDS_FOOTPAD; i++) {
+    for (int i = 0; i < lencoLED.numLedsFootpad; i++) {
       if (i >= half)
         footpad_leds[i].setRGB(lencoLED.ledColors[7][0], lencoLED.ledColors[7][1], lencoLED.ledColors[7][2]);
       else
@@ -501,21 +514,22 @@ void singleFootpadTriggeredStartupLEDs() {
 }
 
 void footpadKnightRider() {
-  const int ridingWidth = lencoLED.fpRidingWidth;
+  const int ridingWidth = constrain((int)lencoLED.fpRidingWidth, 1, max(1, lencoLED.numLedsFootpad - 2));
   const unsigned long animationDelay = lencoLED.fpAnimationDelay;
   const uint8_t fadeAmount = lencoLED.fpFadeAmount;
+  const int travel = max(1, lencoLED.numLedsFootpad - ridingWidth - 2);
 
   if (millis() - lastFootpadKnightRiderUpdate >= animationDelay) {
 
-    for (int i = 0; i < NUM_LEDS_FOOTPAD; i++) {
+    for (int i = 0; i < lencoLED.numLedsFootpad; i++) {
       footpad_leds[i].fadeToBlackBy(fadeAmount);
     }
 
-    footpadCurrentLEDIndex = constrain(footpadCurrentLEDIndex, 0, NUM_LEDS_FOOTPAD - ridingWidth - 2);
+    footpadCurrentLEDIndex = constrain(footpadCurrentLEDIndex, 0, travel);
 
     for (int j = -2; j < ridingWidth + 2; j++) {
       int idx = footpadCurrentLEDIndex + j;
-      if (idx >= 0 && idx < NUM_LEDS_FOOTPAD) {
+      if (idx >= 0 && idx < lencoLED.numLedsFootpad) {
         int fadeFactor;
         if (j < 0 || j >= ridingWidth) fadeFactor = 30;
         else fadeFactor = 100;
@@ -530,7 +544,7 @@ void footpadKnightRider() {
 
     footpadCurrentLEDIndex += footpadAnimationDirFlag;
 
-    if (footpadCurrentLEDIndex >= NUM_LEDS_FOOTPAD - ridingWidth - 2) {
+    if (footpadCurrentLEDIndex >= travel) {
       footpadAnimationDirFlag = -1;
     } else if (footpadCurrentLEDIndex <= 0) {
       footpadAnimationDirFlag = 1;
@@ -544,8 +558,8 @@ void footpadDutyCycleIndicator() {
   double dutyAbs = abs(globalDutyCycle);
   dutyAbs = constrain(dutyAbs, 0.0, 100.0);
 
-  int numLedsToLight = (int)((dutyAbs / 100.0) * NUM_LEDS_FOOTPAD);
-  numLedsToLight = constrain(numLedsToLight, 0, NUM_LEDS_FOOTPAD);
+  int numLedsToLight = (int)((dutyAbs / 100.0) * lencoLED.numLedsFootpad);
+  numLedsToLight = constrain(numLedsToLight, 0, lencoLED.numLedsFootpad);
 
   int r, g, b;
   if (dutyAbs >= 80.0) {
@@ -556,11 +570,23 @@ void footpadDutyCycleIndicator() {
     r = lencoLED.ledColors[9][0];  g = lencoLED.ledColors[9][1];  b = lencoLED.ledColors[9][2];
   }
 
-  for (int i = 0; i < NUM_LEDS_FOOTPAD; i++) {
+  for (int i = 0; i < lencoLED.numLedsFootpad; i++) {
     if (i < numLedsToLight) {
       footpad_leds[i].setRGB(r, g, b);
     } else {
       footpad_leds[i].setRGB(0, 0, 0);
     }
+  }
+}
+
+void clearInactiveLEDs() {
+  for (int i = lencoLED.numLedsForward; i < MAX_LEDS_PER_STRIP; i++) {
+    forward_leds[i] = CRGB::Black;
+  }
+  for (int i = lencoLED.numLedsReverse; i < MAX_LEDS_PER_STRIP; i++) {
+    reverse_leds[i] = CRGB::Black;
+  }
+  for (int i = lencoLED.numLedsFootpad; i < MAX_LEDS_PER_STRIP; i++) {
+    footpad_leds[i] = CRGB::Black;
   }
 }

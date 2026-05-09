@@ -11,8 +11,8 @@
 #define LCM_POLL_BRIGHTNESS_IDX 12
 
 // EEPROM layout (49 bytes total)
-#define EEPROM_SIZE            49
-#define EEPROM_MAGIC           0xABD0
+#define EEPROM_SIZE            52
+#define EEPROM_MAGIC           0xABD1
 #define EEPROM_MAGIC_ADDR      0  // uint16: EEPROM_MAGIC if initialized
 #define EEPROM_COLORS_ADDR     2  // 36 bytes: 12 groups × 3 (RGB)
 #define EEPROM_THRESH_ADDR    38  // uint16: footpadThreshold × 100
@@ -22,14 +22,27 @@
 #define EEPROM_FP_WIDTH_ADDR  45  // uint8: footpad knight rider blob width
 #define EEPROM_FP_DELAY_ADDR  46  // uint16: footpad knight rider step delay, big-endian
 #define EEPROM_FP_FADE_ADDR   48  // uint8: footpad knight rider tail fade
+#define EEPROM_LED_FORWARD_ADDR 49 // uint8: active forward LED count
+#define EEPROM_LED_REVERSE_ADDR 50 // uint8: active reverse LED count
+#define EEPROM_LED_FOOTPAD_ADDR 51 // uint8: active footpad LED count
 
 class LencoLED {
 public:
+    enum {
+        MAX_LED_COUNT = 20,
+        DEFAULT_FORWARD_LED_COUNT = 17,
+        DEFAULT_REVERSE_LED_COUNT = 17,
+        DEFAULT_FOOTPAD_LED_COUNT = 10
+    };
+
     bool    ledEnabled      = true;
     uint8_t startupLedState = 1;
     uint8_t fpRidingWidth = 1;
     uint16_t fpAnimationDelay = 85;
     uint8_t fpFadeAmount = 85;
+    uint8_t numLedsForward = DEFAULT_FORWARD_LED_COUNT;
+    uint8_t numLedsReverse = DEFAULT_REVERSE_LED_COUNT;
+    uint8_t numLedsFootpad = DEFAULT_FOOTPAD_LED_COUNT;
     double  lowVoltage      = 58.9;
     double  fullVoltage     = 79.8;
     uint8_t ledColors[12][3] = {
@@ -49,6 +62,7 @@ public:
 
     // Call from setup() after ESC is initialised
     void init(ESC& esc) {
+        setDefaultLedCounts();
         setDefaultFootpadSettings();
         uint16_t magic;
         EEPROM.get(EEPROM_MAGIC_ADDR, magic);
@@ -117,21 +131,39 @@ public:
                     }
                 }
                 break;
+            case 113: // CMD_SET_LED_COUNTS
+                if (len >= 4) {
+                    uint8_t forwardCount = data[1];
+                    uint8_t reverseCount = data[2];
+                    uint8_t footpadCount = data[3];
+                    if (validLedCounts(forwardCount, reverseCount, footpadCount)) {
+                        numLedsForward = forwardCount;
+                        numLedsReverse = reverseCount;
+                        numLedsFootpad = footpadCount;
+                        if (fpRidingWidth > numLedsFootpad) {
+                            fpRidingWidth = numLedsFootpad;
+                            saveFootpadSettings();
+                        }
+                        saveLedCounts();
+                    }
+                }
+                break;
         }
     }
 
 private:
-    static uint8_t defaultFpRidingWidth() {
-        return (uint8_t)max(1, NUM_LEDS_FOOTPAD / 6);
+    uint8_t defaultFpRidingWidth() const {
+        return (uint8_t)max(1, numLedsFootpad / 6);
     }
 
-    static uint16_t defaultFpAnimationDelay() {
-        return (uint16_t)max(20UL, 50UL * NUM_LEDS / NUM_LEDS_FOOTPAD);
+    uint16_t defaultFpAnimationDelay() const {
+        uint8_t mainLedCount = max(numLedsForward, numLedsReverse);
+        return (uint16_t)max(20UL, 50UL * mainLedCount / numLedsFootpad);
     }
 
-    static uint8_t defaultFpFadeAmount() {
+    uint8_t defaultFpFadeAmount() const {
         uint8_t width = defaultFpRidingWidth();
-        int travel = max(1, NUM_LEDS_FOOTPAD - width - 2);
+        int travel = max(1, numLedsFootpad - width - 2);
         return (uint8_t)constrain(600 / travel, 50, 220);
     }
 
@@ -140,16 +172,32 @@ private:
         return (uint16_t(uint8_t(hiEncoded - 1)) << 8) | uint8_t(loEncoded - 1);
     }
 
-    static bool validFootpadSettings(uint8_t width, uint16_t delay, uint8_t fade) {
-        return width >= 1 && width <= NUM_LEDS_FOOTPAD &&
+    bool validFootpadSettings(uint8_t width, uint16_t delay, uint8_t fade) const {
+        return width >= 1 && width <= numLedsFootpad &&
                delay >= 20 && delay <= 500 &&
                fade >= 50 && fade <= 220;
+    }
+
+    static bool validLedCount(uint8_t count) {
+        return count >= 1 && count <= MAX_LED_COUNT;
+    }
+
+    static bool validLedCounts(uint8_t forwardCount, uint8_t reverseCount, uint8_t footpadCount) {
+        return validLedCount(forwardCount) &&
+               validLedCount(reverseCount) &&
+               validLedCount(footpadCount);
     }
 
     void setDefaultFootpadSettings() {
         fpRidingWidth = defaultFpRidingWidth();
         fpAnimationDelay = defaultFpAnimationDelay();
         fpFadeAmount = defaultFpFadeAmount();
+    }
+
+    void setDefaultLedCounts() {
+        numLedsForward = DEFAULT_FORWARD_LED_COUNT;
+        numLedsReverse = DEFAULT_REVERSE_LED_COUNT;
+        numLedsFootpad = DEFAULT_FOOTPAD_LED_COUNT;
     }
 
     void loadFromEEPROM(ESC& esc) {
@@ -166,6 +214,14 @@ private:
         lowVoltage = lowRaw / 10.0;
         startupLedState = EEPROM.read(EEPROM_LED_STATE_ADDR);
         ledEnabled = (startupLedState == 1);
+
+        numLedsForward = EEPROM.read(EEPROM_LED_FORWARD_ADDR);
+        numLedsReverse = EEPROM.read(EEPROM_LED_REVERSE_ADDR);
+        numLedsFootpad = EEPROM.read(EEPROM_LED_FOOTPAD_ADDR);
+        if (!validLedCounts(numLedsForward, numLedsReverse, numLedsFootpad)) {
+            setDefaultLedCounts();
+            saveLedCounts();
+        }
 
         fpRidingWidth = EEPROM.read(EEPROM_FP_WIDTH_ADDR);
         fpAnimationDelay = (uint16_t(EEPROM.read(EEPROM_FP_DELAY_ADDR)) << 8) |
@@ -185,6 +241,7 @@ private:
         }
         saveSettings(footpadThreshold);
         EEPROM.update(EEPROM_LED_STATE_ADDR, startupLedState);
+        saveLedCounts();
         saveFootpadSettings();
     }
 
@@ -201,6 +258,12 @@ private:
         EEPROM.put(EEPROM_FULL_V_ADDR, fullRaw);
         uint16_t lowRaw = (uint16_t)(lowVoltage * 10);
         EEPROM.put(EEPROM_LOW_V_ADDR, lowRaw);
+    }
+
+    void saveLedCounts() {
+        EEPROM.update(EEPROM_LED_FORWARD_ADDR, numLedsForward);
+        EEPROM.update(EEPROM_LED_REVERSE_ADDR, numLedsReverse);
+        EEPROM.update(EEPROM_LED_FOOTPAD_ADDR, numLedsFootpad);
     }
 
     void saveFootpadSettings() {
