@@ -2,6 +2,9 @@
 #include <FastLED.h>
 #include <EEPROM.h>
 
+#define NUM_LEDS 17
+#define NUM_LEDS_FOOTPAD 10
+
 #undef SPI_CLOCK     // Prevent FastLED/MCP2515 macro conflict
 
 #include "balance_beeper.cpp"
@@ -16,9 +19,6 @@
 #define SLOW_DELAY 50
 #define STARTUP_BRIGHTNESS 30
 #define NORMAL_BRIGHTNESS 255
-
-#define NUM_LEDS 17
-#define NUM_LEDS_FOOTPAD 10
 
 #define FORWARD_PIN 5
 #define REVERSE_PIN 6
@@ -501,10 +501,9 @@ void singleFootpadTriggeredStartupLEDs() {
 }
 
 void footpadKnightRider() {
-  const int ridingWidth = max(1, NUM_LEDS_FOOTPAD / 6);
-  const unsigned long animationDelay = max(20UL, 50UL * NUM_LEDS / NUM_LEDS_FOOTPAD);
-  const int travel = max(1, NUM_LEDS_FOOTPAD - ridingWidth - 2);
-  const uint8_t fadeAmount = (uint8_t)constrain(600 / travel, 50, 220);
+  const int ridingWidth = lencoLED.fpRidingWidth;
+  const unsigned long animationDelay = lencoLED.fpAnimationDelay;
+  const uint8_t fadeAmount = lencoLED.fpFadeAmount;
 
   if (millis() - lastFootpadKnightRiderUpdate >= animationDelay) {
 

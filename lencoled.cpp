@@ -10,18 +10,26 @@
 // [10-11]=voltage, [12]=brightness, [13]=brightness_idle, [14]=status_brightness
 #define LCM_POLL_BRIGHTNESS_IDX 12
 
-// EEPROM layout (45 bytes total)
-#define EEPROM_MAGIC_ADDR      0  // uint16: 0xABCE if initialized
+// EEPROM layout (49 bytes total)
+#define EEPROM_SIZE            49
+#define EEPROM_MAGIC           0xABD0
+#define EEPROM_MAGIC_ADDR      0  // uint16: EEPROM_MAGIC if initialized
 #define EEPROM_COLORS_ADDR     2  // 36 bytes: 12 groups × 3 (RGB)
 #define EEPROM_THRESH_ADDR    38  // uint16: footpadThreshold × 100
 #define EEPROM_FULL_V_ADDR    40  // uint16: fullVoltage × 10
 #define EEPROM_LOW_V_ADDR     42  // uint16: lowVoltage × 10
 #define EEPROM_LED_STATE_ADDR 44  // uint8: startup LED state (0/1)
+#define EEPROM_FP_WIDTH_ADDR  45  // uint8: footpad knight rider blob width
+#define EEPROM_FP_DELAY_ADDR  46  // uint16: footpad knight rider step delay, big-endian
+#define EEPROM_FP_FADE_ADDR   48  // uint8: footpad knight rider tail fade
 
 class LencoLED {
 public:
     bool    ledEnabled      = true;
     uint8_t startupLedState = 1;
+    uint8_t fpRidingWidth = 1;
+    uint16_t fpAnimationDelay = 85;
+    uint8_t fpFadeAmount = 85;
     double  lowVoltage      = 58.9;
     double  fullVoltage     = 79.8;
     uint8_t ledColors[12][3] = {
@@ -41,11 +49,12 @@ public:
 
     // Call from setup() after ESC is initialised
     void init(ESC& esc) {
+        setDefaultFootpadSettings();
         uint16_t magic;
         EEPROM.get(EEPROM_MAGIC_ADDR, magic);
-        if (magic != 0xABCE) {
+        if (magic != EEPROM_MAGIC) {
             saveAll(esc.footpadThreshold);
-            uint16_t m = 0xABCE;
+            uint16_t m = EEPROM_MAGIC;
             EEPROM.put(EEPROM_MAGIC_ADDR, m);
         } else {
             loadFromEEPROM(esc);
@@ -95,10 +104,54 @@ public:
                     }
                 }
                 break;
+            case 112: // CMD_SET_FOOTPAD_ANIMATION
+                if (len >= 5) {
+                    uint8_t width = data[1];
+                    uint16_t delay = decodeEncodedDelay(data[2], data[3]);
+                    uint8_t fade = data[4];
+                    if (validFootpadSettings(width, delay, fade)) {
+                        fpRidingWidth = width;
+                        fpAnimationDelay = delay;
+                        fpFadeAmount = fade;
+                        saveFootpadSettings();
+                    }
+                }
+                break;
         }
     }
 
 private:
+    static uint8_t defaultFpRidingWidth() {
+        return (uint8_t)max(1, NUM_LEDS_FOOTPAD / 6);
+    }
+
+    static uint16_t defaultFpAnimationDelay() {
+        return (uint16_t)max(20UL, 50UL * NUM_LEDS / NUM_LEDS_FOOTPAD);
+    }
+
+    static uint8_t defaultFpFadeAmount() {
+        uint8_t width = defaultFpRidingWidth();
+        int travel = max(1, NUM_LEDS_FOOTPAD - width - 2);
+        return (uint8_t)constrain(600 / travel, 50, 220);
+    }
+
+    static uint16_t decodeEncodedDelay(uint8_t hiEncoded, uint8_t loEncoded) {
+        if (hiEncoded == 0 || loEncoded == 0) return 0;
+        return (uint16_t(uint8_t(hiEncoded - 1)) << 8) | uint8_t(loEncoded - 1);
+    }
+
+    static bool validFootpadSettings(uint8_t width, uint16_t delay, uint8_t fade) {
+        return width >= 1 && width <= NUM_LEDS_FOOTPAD &&
+               delay >= 20 && delay <= 500 &&
+               fade >= 50 && fade <= 220;
+    }
+
+    void setDefaultFootpadSettings() {
+        fpRidingWidth = defaultFpRidingWidth();
+        fpAnimationDelay = defaultFpAnimationDelay();
+        fpFadeAmount = defaultFpFadeAmount();
+    }
+
     void loadFromEEPROM(ESC& esc) {
         for (uint8_t i = 0; i < 12; i++) {
             ledColors[i][0] = EEPROM.read(EEPROM_COLORS_ADDR + i * 3);
@@ -113,6 +166,15 @@ private:
         lowVoltage = lowRaw / 10.0;
         startupLedState = EEPROM.read(EEPROM_LED_STATE_ADDR);
         ledEnabled = (startupLedState == 1);
+
+        fpRidingWidth = EEPROM.read(EEPROM_FP_WIDTH_ADDR);
+        fpAnimationDelay = (uint16_t(EEPROM.read(EEPROM_FP_DELAY_ADDR)) << 8) |
+                           EEPROM.read(EEPROM_FP_DELAY_ADDR + 1);
+        fpFadeAmount = EEPROM.read(EEPROM_FP_FADE_ADDR);
+        if (!validFootpadSettings(fpRidingWidth, fpAnimationDelay, fpFadeAmount)) {
+            setDefaultFootpadSettings();
+            saveFootpadSettings();
+        }
     }
 
     void saveAll(double footpadThreshold) {
@@ -123,6 +185,7 @@ private:
         }
         saveSettings(footpadThreshold);
         EEPROM.update(EEPROM_LED_STATE_ADDR, startupLedState);
+        saveFootpadSettings();
     }
 
     void saveColor(uint8_t id) {
@@ -138,5 +201,12 @@ private:
         EEPROM.put(EEPROM_FULL_V_ADDR, fullRaw);
         uint16_t lowRaw = (uint16_t)(lowVoltage * 10);
         EEPROM.put(EEPROM_LOW_V_ADDR, lowRaw);
+    }
+
+    void saveFootpadSettings() {
+        EEPROM.update(EEPROM_FP_WIDTH_ADDR, fpRidingWidth);
+        EEPROM.update(EEPROM_FP_DELAY_ADDR, (uint8_t)(fpAnimationDelay >> 8));
+        EEPROM.update(EEPROM_FP_DELAY_ADDR + 1, (uint8_t)(fpAnimationDelay & 0xFF));
+        EEPROM.update(EEPROM_FP_FADE_ADDR, fpFadeAmount);
     }
 };
