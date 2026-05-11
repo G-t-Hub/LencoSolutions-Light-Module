@@ -143,8 +143,16 @@ public:
                         numLedsForward = forwardCount;
                         numLedsReverse = reverseCount;
                         numLedsFootpad = footpadCount;
+                        bool needsSave = false;
                         if (fpRidingWidth > numLedsFootpad) {
                             fpRidingWidth = numLedsFootpad;
+                            needsSave = true;
+                        }
+                        if (fpFadeAmount > numLedsFootpad) {
+                            fpFadeAmount = numLedsFootpad;
+                            needsSave = true;
+                        }
+                        if (needsSave) {
                             saveFootpadSettings();
                         }
                         saveLedCounts();
