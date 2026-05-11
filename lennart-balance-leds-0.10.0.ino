@@ -516,28 +516,36 @@ void singleFootpadTriggeredStartupLEDs() {
 void footpadKnightRider() {
   const int ridingWidth = constrain((int)lencoLED.fpRidingWidth, 1, max(1, lencoLED.numLedsFootpad - 2));
   const unsigned long animationDelay = lencoLED.fpAnimationDelay;
-  const uint8_t fadeAmount = lencoLED.fpFadeAmount;
+  const uint8_t fadeDistance = lencoLED.fpFadeAmount;
   const int travel = max(1, lencoLED.numLedsFootpad - ridingWidth - 2);
 
   if (millis() - lastFootpadKnightRiderUpdate >= animationDelay) {
 
-    for (int i = 0; i < lencoLED.numLedsFootpad; i++) {
-      footpad_leds[i].fadeToBlackBy(fadeAmount);
-    }
+    fill_solid(footpad_leds, lencoLED.numLedsFootpad, CRGB::Black);
 
     footpadCurrentLEDIndex = constrain(footpadCurrentLEDIndex, 0, travel);
 
-    for (int j = -2; j < ridingWidth + 2; j++) {
+    // Draw blob (core + edges)
+    for (int j = -1; j < ridingWidth + 1; j++) {
       int idx = footpadCurrentLEDIndex + j;
       if (idx >= 0 && idx < lencoLED.numLedsFootpad) {
-        int fadeFactor;
-        if (j < 0 || j >= ridingWidth) fadeFactor = 30;
-        else fadeFactor = 100;
-
         footpad_leds[idx].setRGB(
-          (lencoLED.ledColors[8][0] * fadeFactor) / 100,
-          (lencoLED.ledColors[8][1] * fadeFactor) / 100,
-          (lencoLED.ledColors[8][2] * fadeFactor) / 100
+          lencoLED.ledColors[8][0],
+          lencoLED.ledColors[8][1],
+          lencoLED.ledColors[8][2]
+        );
+      }
+    }
+
+    // Draw fading tail behind blob
+    for (int d = 1; d <= fadeDistance; d++) {
+      int idx = footpadCurrentLEDIndex - d;
+      if (idx >= 0 && idx < lencoLED.numLedsFootpad && fadeDistance > 0) {
+        uint8_t brightness = (255 * (fadeDistance - d)) / fadeDistance;
+        footpad_leds[idx].setRGB(
+          (lencoLED.ledColors[8][0] * brightness) / 255,
+          (lencoLED.ledColors[8][1] * brightness) / 255,
+          (lencoLED.ledColors[8][2] * brightness) / 255
         );
       }
     }

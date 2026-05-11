@@ -32,14 +32,17 @@ public:
         MAX_LED_COUNT = 20,
         DEFAULT_FORWARD_LED_COUNT = 17,
         DEFAULT_REVERSE_LED_COUNT = 17,
-        DEFAULT_FOOTPAD_LED_COUNT = 10
+        DEFAULT_FOOTPAD_LED_COUNT = 10,
+        DEFAULT_FP_RIDING_WIDTH = 2,
+        DEFAULT_FP_ANIMATION_DELAY = 85,
+        DEFAULT_FP_FADE_AMOUNT = 3
     };
 
     bool    ledEnabled      = true;
     uint8_t startupLedState = 1;
-    uint8_t fpRidingWidth = 1;
-    uint16_t fpAnimationDelay = 85;
-    uint8_t fpFadeAmount = 85;
+    uint8_t fpRidingWidth = DEFAULT_FP_RIDING_WIDTH;
+    uint16_t fpAnimationDelay = DEFAULT_FP_ANIMATION_DELAY;
+    uint8_t fpFadeAmount = DEFAULT_FP_FADE_AMOUNT;
     uint8_t numLedsForward = DEFAULT_FORWARD_LED_COUNT;
     uint8_t numLedsReverse = DEFAULT_REVERSE_LED_COUNT;
     uint8_t numLedsFootpad = DEFAULT_FOOTPAD_LED_COUNT;
@@ -152,21 +155,6 @@ public:
     }
 
 private:
-    uint8_t defaultFpRidingWidth() const {
-        return (uint8_t)max(1, numLedsFootpad / 6);
-    }
-
-    uint16_t defaultFpAnimationDelay() const {
-        uint8_t mainLedCount = max(numLedsForward, numLedsReverse);
-        return (uint16_t)max(20UL, 50UL * mainLedCount / numLedsFootpad);
-    }
-
-    uint8_t defaultFpFadeAmount() const {
-        uint8_t width = defaultFpRidingWidth();
-        int travel = max(1, numLedsFootpad - width - 2);
-        return (uint8_t)constrain(600 / travel, 50, 220);
-    }
-
     static uint16_t decodeEncodedDelay(uint8_t hiEncoded, uint8_t loEncoded) {
         if (hiEncoded == 0 || loEncoded == 0) return 0;
         return (uint16_t(uint8_t(hiEncoded - 1)) << 8) | uint8_t(loEncoded - 1);
@@ -175,7 +163,7 @@ private:
     bool validFootpadSettings(uint8_t width, uint16_t delay, uint8_t fade) const {
         return width >= 1 && width <= numLedsFootpad &&
                delay >= 20 && delay <= 500 &&
-               fade >= 50 && fade <= 220;
+               fade <= numLedsFootpad;
     }
 
     static bool validLedCount(uint8_t count) {
@@ -189,9 +177,9 @@ private:
     }
 
     void setDefaultFootpadSettings() {
-        fpRidingWidth = defaultFpRidingWidth();
-        fpAnimationDelay = defaultFpAnimationDelay();
-        fpFadeAmount = defaultFpFadeAmount();
+        fpRidingWidth = DEFAULT_FP_RIDING_WIDTH;
+        fpAnimationDelay = DEFAULT_FP_ANIMATION_DELAY;
+        fpFadeAmount = DEFAULT_FP_FADE_AMOUNT;
     }
 
     void setDefaultLedCounts() {
