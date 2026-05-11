@@ -537,9 +537,9 @@ void footpadKnightRider() {
       }
     }
 
-    // Draw fading tail behind blob
+    // Draw fading tail behind blob (in direction of motion)
     for (int d = 1; d <= fadeDistance; d++) {
-      int idx = footpadCurrentLEDIndex - d;
+      int idx = footpadCurrentLEDIndex - (d * footpadAnimationDirFlag);
       if (idx >= 0 && idx < lencoLED.numLedsFootpad && fadeDistance > 0) {
         uint8_t brightness = (255 * (fadeDistance - d)) / fadeDistance;
         footpad_leds[idx].setRGB(
