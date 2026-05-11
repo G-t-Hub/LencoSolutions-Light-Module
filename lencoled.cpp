@@ -8,7 +8,19 @@
 // [0]=COMM_CUSTOM_APP_DATA(36), [1]=pkg(101), [2]=cmd(24),
 // [3]=state, [4]=fault, [5]=duty/pitch, [6-7]=erpm, [8-9]=current,
 // [10-11]=voltage, [12]=brightness, [13]=brightness_idle, [14]=status_brightness
+#define LCM_POLL_STATE_IDX 3
+#define LCM_POLL_DUTY_PITCH_IDX 5
+#define LCM_POLL_ERPM_IDX 6
+#define LCM_POLL_VOLTAGE_IDX 10
 #define LCM_POLL_BRIGHTNESS_IDX 12
+
+static const uint8_t FOOT_NONE = 0;
+static const uint8_t FOOT_LEFT = 1;
+static const uint8_t FOOT_RIGHT = 2;
+static const uint8_t FOOT_BOTH = 3;
+static const uint8_t REFLOAT_STATE_UNKNOWN = 0xFF;
+static const unsigned long REFLOAT_POLL_TIMEOUT_MS = 2000;
+static const unsigned long LIFT_FADE_TIME_MS = 500;
 
 // EEPROM layout (49 bytes total)
 #define EEPROM_SIZE            52
@@ -40,6 +52,19 @@ public:
 
     bool    ledEnabled      = true;
     uint8_t startupLedState = 1;
+    bool    refloat_active = false;
+    uint8_t refloat_brightness = 100;
+    unsigned long last_poll_ms = 0;
+    uint8_t refloat_state = REFLOAT_STATE_UNKNOWN;
+    uint8_t refloat_pitch_deg = 0;
+    bool    board_lifted = false;
+    float   lift_fade_scale = 1.0f;
+    unsigned long last_lift_fade_ms = 0;
+    float   refloat_erpm = 0.0f;
+    float   refloat_voltage = 0.0f;
+    uint8_t refloat_footpad = FOOT_NONE;
+    bool    lights_on = true;
+    float   brightness_scale = 1.0f;
     uint8_t fpRidingWidth = DEFAULT_FP_RIDING_WIDTH;
     uint16_t fpAnimationDelay = DEFAULT_FP_ANIMATION_DELAY;
     uint8_t fpFadeAmount = DEFAULT_FP_FADE_AMOUNT;
@@ -81,7 +106,44 @@ public:
     // Call from loop() when esc.lcmPollAvailable is true
     void handleLcmPoll(uint8_t* data, uint8_t len) {
         if (len <= LCM_POLL_BRIGHTNESS_IDX) return;
-        ledEnabled = (data[LCM_POLL_BRIGHTNESS_IDX] > 0);
+        refloat_active = true;
+        uint8_t brightness = data[LCM_POLL_BRIGHTNESS_IDX];
+        refloat_brightness = brightness > 100 ? 100 : brightness;
+        refloat_state = data[LCM_POLL_STATE_IDX] & 0x0F;
+        if (!isRunningCompatState(refloat_state)) {
+            refloat_pitch_deg = data[LCM_POLL_DUTY_PITCH_IDX];
+        }
+        refloat_erpm = decodeInt16Scaled(data[LCM_POLL_ERPM_IDX], data[LCM_POLL_ERPM_IDX + 1], 1.0f);
+        refloat_voltage = decodeInt16Scaled(data[LCM_POLL_VOLTAGE_IDX], data[LCM_POLL_VOLTAGE_IDX + 1], 10.0f);
+        refloat_footpad = (data[LCM_POLL_STATE_IDX] >> 4) & 0x03;
+        last_poll_ms = millis();
+    }
+
+    void updateRefloatState() {
+        bool poll_stale = refloat_active && (millis() - last_poll_ms > REFLOAT_POLL_TIMEOUT_MS);
+        if (poll_stale) {
+            // Freeze fallback: keep last-known Refloat values and stay active.
+        }
+        updateLiftState();
+        updateLiftFade();
+        lights_on = ledEnabled && (!refloat_active || refloat_brightness > 0);
+        brightness_scale = refloat_active ? refloat_brightness / 100.0f : 1.0f;
+    }
+
+    bool lightsOn() const {
+        return lights_on;
+    }
+
+    float brightnessScale() const {
+        return brightness_scale * lift_fade_scale;
+    }
+
+    float chargingBrightnessScale() const {
+        return refloat_brightness > 0 ? brightness_scale : 1.0f;
+    }
+
+    bool refloatRunning() const {
+        return isRunningCompatState(refloat_state);
     }
 
     // Call from loop() when esc.appFrameAvailable is true
@@ -163,6 +225,45 @@ public:
     }
 
 private:
+    static float decodeInt16Scaled(uint8_t hi, uint8_t lo, float scale) {
+        int16_t raw = (int16_t)((uint16_t(hi) << 8) | lo);
+        return raw / scale;
+    }
+
+    static bool isRunningCompatState(uint8_t state) {
+        // Refloat internal STATE_RUNNING maps to compat states 1..5; byte[5] is duty there.
+        return state >= 1 && state <= 5;
+    }
+
+    void updateLiftState() {
+        if (!refloat_active || refloat_state == REFLOAT_STATE_UNKNOWN || isRunningCompatState(refloat_state)) {
+            board_lifted = false;
+            return;
+        }
+
+        // If Refloat lights-off-when-lifted is disabled, pitch is 0 and this stays false.
+        if (refloat_pitch_deg > 60) {
+            board_lifted = true;
+        } else if (refloat_pitch_deg < 50) {
+            board_lifted = false;
+        }
+    }
+
+    void updateLiftFade() {
+        unsigned long now = millis();
+        if (last_lift_fade_ms == 0) {
+            last_lift_fade_ms = now;
+            return;
+        }
+
+        unsigned long delta = now - last_lift_fade_ms;
+        last_lift_fade_ms = now;
+
+        float step = delta / (float)LIFT_FADE_TIME_MS;
+        lift_fade_scale += board_lifted ? -step : step;
+        lift_fade_scale = constrain(lift_fade_scale, 0.0f, 1.0f);
+    }
+
     static uint16_t decodeEncodedDelay(uint8_t hiEncoded, uint8_t loEncoded) {
         if (hiEncoded == 0 || loEncoded == 0) return 0;
         return (uint16_t(uint8_t(hiEncoded - 1)) << 8) | uint8_t(loEncoded - 1);

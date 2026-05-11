@@ -142,6 +142,7 @@ void loop() {
     lencoLED.handleLcmPoll(esc.lcmPollData, esc.lcmPollLen);
     esc.lcmPollAvailable = false;
   }
+  lencoLED.updateRefloatState();
 
   // === Periodic LCM poll (Refloat light control) ===
   if (millis() - lastLcmPollTime >= LCM_POLL_INTERVAL) {
@@ -155,8 +156,8 @@ void loop() {
 
     lastCanPollTime = millis();
 
-    globalErpm = esc.erpm;
-    globalVoltage = esc.voltage;
+    globalErpm = lencoLED.refloat_active ? lencoLED.refloat_erpm : esc.erpm;
+    globalVoltage = lencoLED.refloat_active ? lencoLED.refloat_voltage : esc.voltage;
     globalDutyCycle = esc.dutyCycle;
   }
 
@@ -164,24 +165,70 @@ void loop() {
   balanceBeeper.loop(globalDutyCycle, globalErpm, globalVoltage, lencoLED.lowVoltage);
 
   // === Determine direction and state ===
-  if (globalErpm > 200) {
-    startupState = false;
-    movingState = true;
-    direction = FORWARD;
-    targetBrightness = NORMAL_BRIGHTNESS;
-  } else if (globalErpm < -200) {
-    startupState = false;
-    movingState = true;
-    direction = REVERSE;
-    targetBrightness = NORMAL_BRIGHTNESS;
-  } else {
-    if (movingState && !startupState)
-    {
-      returningToStartup = true;
+  bool refloatFaultState = false;
+  bool refloatChargingState = false;
+  bool refloatDisabledState = false;
+
+  if (lencoLED.refloat_active && lencoLED.refloat_state != REFLOAT_STATE_UNKNOWN) {
+    uint8_t refloatState = lencoLED.refloat_state;
+    refloatFaultState = (refloatState >= 6 && refloatState <= 9) || (refloatState >= 12 && refloatState <= 13);
+    refloatChargingState = (refloatState == 14);
+    refloatDisabledState = (refloatState == 15);
+
+    if (refloatState >= 1 && refloatState <= 3) {
+      startupState = false;
+      movingState = true;
+      if (globalErpm > 200) {
+        direction = FORWARD;
+      } else if (globalErpm < -200) {
+        direction = REVERSE;
+      }
+      targetBrightness = NORMAL_BRIGHTNESS;
+    } else if (refloatState == 0 || refloatState == 4 || refloatState == 5 || refloatState == 11) {
+      if (movingState && !startupState)
+      {
+        returningToStartup = true;
+      }
+      startupState = true;
+      movingState = false;
+      targetBrightness = STARTUP_BRIGHTNESS;
+    } else if (refloatFaultState || refloatChargingState || refloatDisabledState) {
+      if (movingState && !startupState)
+      {
+        returningToStartup = true;
+      }
+      startupState = false;
+      movingState = false;
+      targetBrightness = refloatFaultState ? NORMAL_BRIGHTNESS : STARTUP_BRIGHTNESS;
+    } else {
+      if (movingState && !startupState)
+      {
+        returningToStartup = true;
+      }
+      startupState = true;
+      movingState = false;
+      targetBrightness = STARTUP_BRIGHTNESS;
     }
-    startupState = true;
-    movingState = false;
-    targetBrightness = STARTUP_BRIGHTNESS;
+  } else {
+    if (globalErpm > 200) {
+      startupState = false;
+      movingState = true;
+      direction = FORWARD;
+      targetBrightness = NORMAL_BRIGHTNESS;
+    } else if (globalErpm < -200) {
+      startupState = false;
+      movingState = true;
+      direction = REVERSE;
+      targetBrightness = NORMAL_BRIGHTNESS;
+    } else {
+      if (movingState && !startupState)
+      {
+        returningToStartup = true;
+      }
+      startupState = true;
+      movingState = false;
+      targetBrightness = STARTUP_BRIGHTNESS;
+    }
   }
 
   // === Detect state and direction transitions ===
@@ -199,12 +246,30 @@ void loop() {
     ledFadeActive = false;
   }
 
-  if (!lencoLED.ledEnabled) {
+  bool lightsOn = lencoLED.lightsOn();
+  bool chargingLightsOn = lencoLED.ledEnabled && refloatChargingState;
+  if (refloatDisabledState) {
     fill_solid(forward_leds, lencoLED.numLedsForward, CRGB::Black);
     fill_solid(reverse_leds, lencoLED.numLedsReverse, CRGB::Black);
+    fill_solid(footpad_leds, lencoLED.numLedsFootpad, CRGB::Black);
+  } else if (!lightsOn && !chargingLightsOn) {
+    fill_solid(forward_leds, lencoLED.numLedsForward, CRGB::Black);
+    fill_solid(reverse_leds, lencoLED.numLedsReverse, CRGB::Black);
+    if (refloatFaultState || refloatChargingState) {
+      fill_solid(footpad_leds, lencoLED.numLedsFootpad, CRGB::Black);
+    }
   }
 
-  if (lencoLED.ledEnabled && ledFadeActive) {
+  if (lightsOn && refloatFaultState) {
+    CRGB faultColor = ((millis() / 500) % 2 == 0) ? CRGB(255, 0, 0) : CRGB::Black;
+    fill_solid(forward_leds, lencoLED.numLedsForward, faultColor);
+    fill_solid(reverse_leds, lencoLED.numLedsReverse, faultColor);
+    fill_solid(footpad_leds, lencoLED.numLedsFootpad, faultColor);
+  } else if (chargingLightsOn) {
+    fill_solid(forward_leds, lencoLED.numLedsForward, CRGB::Black);
+    fill_solid(reverse_leds, lencoLED.numLedsReverse, CRGB::Black);
+    batteryPercentStartupLEDs();
+  } else if (lightsOn && ledFadeActive) {
     if (fadeForwardReverse) {
       for (int i = 0; i < lencoLED.numLedsForward; i++) {
         forward_leds[i].fadeToBlackBy(60);
@@ -221,7 +286,7 @@ void loop() {
   } else if (!ledFadeActive && startupState) {
     processStartupAction();
   } else if (!ledFadeActive && movingState) {
-    if (lencoLED.ledEnabled) {
+    if (lightsOn) {
       int rideLedCount = (direction == FORWARD) ? lencoLED.numLedsForward : lencoLED.numLedsReverse;
       knightRider(lencoLED.ledColors[0][0], lencoLED.ledColors[0][1], lencoLED.ledColors[0][2], max(1, rideLedCount / 3));
       footpadDutyCycleIndicator();
@@ -231,7 +296,7 @@ void loop() {
   }
 
   // === Brake logic ===
-  if (millis() - lastBrakeCheckMillis >= brakeCheckInterval) {
+  if (!refloatFaultState && !refloatChargingState && !refloatDisabledState && millis() - lastBrakeCheckMillis >= brakeCheckInterval) {
     checkBraking();
     lastBrakeCheckMillis = millis();
   }
@@ -240,7 +305,9 @@ void loop() {
   if (millis() - lastLEDUpdateMillis >= LED_UPDATE_INTERVAL) {
     currentBrightness += constrain(targetBrightness - currentBrightness, -5, 5);
     clearInactiveLEDs();
-    FastLED.setBrightness(currentBrightness);
+    float brightnessScale = chargingLightsOn ? lencoLED.chargingBrightnessScale() : (lightsOn ? lencoLED.brightnessScale() : 1.0f);
+    int scaledBrightness = constrain((int)(currentBrightness * brightnessScale), 0, 255);
+    FastLED.setBrightness(scaledBrightness);
     FastLED.show();
     lastLEDUpdateMillis = millis();
   }
@@ -270,7 +337,7 @@ void checkBraking() {
 
   previousErpm = globalErpm;
 
-  if (!lencoLED.ledEnabled) return;
+  if (!lencoLED.lightsOn()) return;
 
   CRGB *leds_const = (direction == FORWARD) ? reverse_leds : forward_leds;
   int ledCount = (direction == FORWARD) ? lencoLED.numLedsReverse : lencoLED.numLedsForward;
@@ -352,15 +419,15 @@ void processStartupAction() {
     returningToStartup = false;
   }
 
-  staticStartupLEDs();  // skips forward/reverse when !ledEnabled
+  staticStartupLEDs();  // skips forward/reverse when lights_on is false
 
   if (!startupAnimationComplete) {
-    startupAnimation();  // always runs regardless of ledEnabled
+    startupAnimation();  // always runs regardless of lights_on
     return;
   }
 
   // Animation complete — remaining footpad patterns only show when LEDs are enabled.
-  if (!lencoLED.ledEnabled) {
+  if (!lencoLED.lightsOn()) {
     fill_solid(footpad_leds, lencoLED.numLedsFootpad, CRGB::Black);
     return;
   }
@@ -380,7 +447,10 @@ void processStartupAction() {
     voltageAcquiredMS = millis();
   }
 
-  if (esc.adc1 > esc.footpadThreshold && esc.adc2 > esc.footpadThreshold) {
+  bool bothFootpads = lencoLED.refloat_active
+      ? lencoLED.refloat_footpad == FOOT_BOTH
+      : (esc.adc1 > esc.footpadThreshold && esc.adc2 > esc.footpadThreshold);
+  if (bothFootpads) {
     lastFootpadTriggerMillis = millis();
     isInitialStartup = false;
   }
@@ -395,7 +465,9 @@ void processStartupAction() {
   if (showBatteryOnTimer || showBatteryOnFootpad) {
     batteryPercentStartupLEDs();
   } else {
-    bool onlyOneFootpad = (esc.adc1 > esc.footpadThreshold) != (esc.adc2 > esc.footpadThreshold);
+    bool onlyOneFootpad = lencoLED.refloat_active
+        ? (lencoLED.refloat_footpad == FOOT_LEFT || lencoLED.refloat_footpad == FOOT_RIGHT)
+        : ((esc.adc1 > esc.footpadThreshold) != (esc.adc2 > esc.footpadThreshold));
     if (onlyOneFootpad) {
       singleFootpadTriggeredStartupLEDs();
     } else {
@@ -425,7 +497,7 @@ void startupAnimation() {
 }
 
 void staticStartupLEDs() {
-  if (!lencoLED.ledEnabled) return;
+  if (!lencoLED.lightsOn()) return;
   CRGB *frontLeds = (direction == FORWARD) ? forward_leds : reverse_leds;
   CRGB *rearLeds = (direction == FORWARD) ? reverse_leds : forward_leds;
   int frontCount = (direction == FORWARD) ? lencoLED.numLedsForward : lencoLED.numLedsReverse;
@@ -493,14 +565,21 @@ void batteryPercentStartupLEDs() {
 
 void singleFootpadTriggeredStartupLEDs() {
   const int half = lencoLED.numLedsFootpad / 2;
-  if (esc.adc1 > esc.footpadThreshold) {
+  bool leftFootpad = lencoLED.refloat_active
+      ? (lencoLED.refloat_footpad == FOOT_LEFT)
+      : (esc.adc1 > esc.footpadThreshold);
+  bool rightFootpad = lencoLED.refloat_active
+      ? (lencoLED.refloat_footpad == FOOT_RIGHT)
+      : (esc.adc2 > esc.footpadThreshold);
+
+  if (leftFootpad) {
     for (int i = 0; i < lencoLED.numLedsFootpad; i++) {
       if (i < half)
         footpad_leds[i].setRGB(lencoLED.ledColors[7][0], lencoLED.ledColors[7][1], lencoLED.ledColors[7][2]);
       else
         footpad_leds[i].setRGB(0, 0, 0);
     }
-  } else if (esc.adc2 > esc.footpadThreshold) {
+  } else if (rightFootpad) {
     for (int i = 0; i < lencoLED.numLedsFootpad; i++) {
       if (i >= half)
         footpad_leds[i].setRGB(lencoLED.ledColors[7][0], lencoLED.ledColors[7][1], lencoLED.ledColors[7][2]);
