@@ -13,9 +13,6 @@ const uint8_t MAX_LEDS_PER_STRIP = LencoLED::MAX_LED_COUNT;
 #define BATTERY_INDICATOR_DURATION 5000 // 5 seconds
 #define STARTUP_ANIMATION_DURATION 5000 // 5 seconds
 
-#define THRESHOLD 5000
-#define FAST_DELAY 20
-#define SLOW_DELAY 50
 #define STARTUP_BRIGHTNESS 30
 #define NORMAL_BRIGHTNESS 255
 
@@ -70,10 +67,8 @@ bool isInitialStartup = true;
 unsigned long startupBeginMS = 0;
 bool startupAnimationComplete = false;
 
-int currentLEDIndex = 0;
 int direction = FORWARD;
 int previousDirection = FORWARD;
-int animationDirFlag = 1;
 int previousErpm = 0;
 
 bool ledFadeActive = false;
@@ -356,11 +351,13 @@ void checkBraking() {
 }
 
 void knightRider(int red, int green, int blue, int ridingWidth) {
+  static int pos = 0;
+  static int animDir = 1;
+
   CRGB *leds = (direction == FORWARD) ? forward_leds : reverse_leds;
   int ledCount = (direction == FORWARD) ? lencoLED.numLedsForward : lencoLED.numLedsReverse;
-  ridingWidth = constrain(ridingWidth, 1, max(1, ledCount - 2));
-  int travel = max(1, ledCount - ridingWidth - 2);
-  if (!leds) return;
+  ridingWidth = constrain(ridingWidth, 1, ledCount);
+  int travel = max(0, ledCount - ridingWidth);
 
   const long IDLE_ERPM = 200;
   if (abs(globalErpm) < IDLE_ERPM) {
@@ -382,15 +379,12 @@ void knightRider(int red, int green, int blue, int ridingWidth) {
       leds[i].fadeToBlackBy(60);
     }
 
-    currentLEDIndex = constrain(currentLEDIndex, 0, travel);
+    pos = constrain(pos, 0, travel);
 
     for (int j = -2; j < ridingWidth + 2; j++) {
-      int idx = currentLEDIndex + j;
+      int idx = pos + j;
       if (idx >= 0 && idx < ledCount) {
-        int fadeFactor;
-        if (j < 0 || j >= ridingWidth) fadeFactor = 30;
-        else fadeFactor = 100;
-
+        int fadeFactor = (j < 0 || j >= ridingWidth) ? 30 : 100;
         leds[idx].setRGB(
           (red   * fadeFactor) / 100,
           (green * fadeFactor) / 100,
@@ -399,13 +393,10 @@ void knightRider(int red, int green, int blue, int ridingWidth) {
       }
     }
 
-    currentLEDIndex += animationDirFlag;
+    pos += animDir;
 
-    if (currentLEDIndex >= travel) {
-      animationDirFlag = -1;
-    } else if (currentLEDIndex <= 0) {
-      animationDirFlag = 1;
-    }
+    if (pos >= travel) animDir = -1;
+    else if (pos <= 0)  animDir =  1;
 
     clearInactiveLEDs();
     FastLED.show();
