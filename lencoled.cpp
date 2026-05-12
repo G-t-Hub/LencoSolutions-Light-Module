@@ -120,10 +120,6 @@ public:
     }
 
     void updateRefloatState() {
-        bool poll_stale = refloat_active && (millis() - last_poll_ms > REFLOAT_POLL_TIMEOUT_MS);
-        if (poll_stale) {
-            // Freeze fallback: keep last-known Refloat values and stay active.
-        }
         updateLiftState();
         updateLiftFade();
         lights_on = ledEnabled && (!refloat_active || refloat_brightness > 0);

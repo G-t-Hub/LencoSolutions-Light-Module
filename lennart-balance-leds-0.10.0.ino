@@ -37,9 +37,9 @@ BalanceBeeper balanceBeeper;
 LencoLED lencoLED;
 
 // Global variables for ESC data
-double globalErpm = 0.0;
-double globalVoltage = 0.0;
-double globalDutyCycle = 0.0;
+float globalErpm = 0.0f;
+float globalVoltage = 0.0f;
+float globalDutyCycle = 0.0f;
 
 // Polling configuration
 const unsigned long CAN_POLLING_INTERVAL = 100; // every 100ms
@@ -423,17 +423,17 @@ void processStartupAction() {
     return;
   }
 
-  if (globalVoltage == 0.0) {
+  if (globalVoltage < 0.1f) {
     warningLEDs();
     return;
   }
 
-  if (globalVoltage > 0.0 && (globalVoltage - lencoLED.lowVoltage) / (lencoLED.fullVoltage - lencoLED.lowVoltage) <= 0.10) {
+  if (globalVoltage >= 0.1f && (globalVoltage - lencoLED.lowVoltage) / (lencoLED.fullVoltage - lencoLED.lowVoltage) <= 0.10) {
     lowVoltageWarningLEDs();
     return;
   }
 
-  if (!voltageAcquired && globalVoltage != 0.0) {
+  if (!voltageAcquired && globalVoltage >= 0.1f) {
     voltageAcquired = true;
     voltageAcquiredMS = millis();
   }
