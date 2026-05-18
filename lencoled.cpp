@@ -134,10 +134,6 @@ public:
         return brightness_scale * lift_fade_scale;
     }
 
-    float chargingBrightnessScale() const {
-        return refloat_brightness > 0 ? brightness_scale : 1.0f;
-    }
-
     bool refloatRunning() const {
         return isRunningCompatState(refloat_state);
     }

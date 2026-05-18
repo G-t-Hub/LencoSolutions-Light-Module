@@ -160,14 +160,10 @@ void loop() {
   balanceBeeper.loop(globalDutyCycle, globalErpm, globalVoltage, lencoLED.lowVoltage);
 
   // === Determine direction and state ===
-  bool refloatFaultState = false;
-  bool refloatChargingState = false;
   bool refloatDisabledState = false;
 
   if (lencoLED.refloat_active && lencoLED.refloat_state != REFLOAT_STATE_UNKNOWN) {
     uint8_t refloatState = lencoLED.refloat_state;
-    refloatFaultState = (refloatState >= 6 && refloatState <= 9) || (refloatState >= 12 && refloatState <= 13);
-    refloatChargingState = (refloatState == 14);
     refloatDisabledState = (refloatState == 15);
 
     if (refloatState >= 1 && refloatState <= 3) {
@@ -179,7 +175,7 @@ void loop() {
         direction = REVERSE;
       }
       targetBrightness = NORMAL_BRIGHTNESS;
-    } else if (refloatState == 0 || refloatState == 4 || refloatState == 5 || refloatState == 11) {
+    } else if (!refloatDisabledState) {
       if (movingState && !startupState)
       {
         returningToStartup = true;
@@ -187,20 +183,12 @@ void loop() {
       startupState = true;
       movingState = false;
       targetBrightness = STARTUP_BRIGHTNESS;
-    } else if (refloatFaultState || refloatChargingState || refloatDisabledState) {
-      if (movingState && !startupState)
-      {
-        returningToStartup = true;
-      }
-      startupState = false;
-      movingState = false;
-      targetBrightness = refloatFaultState ? NORMAL_BRIGHTNESS : STARTUP_BRIGHTNESS;
     } else {
       if (movingState && !startupState)
       {
         returningToStartup = true;
       }
-      startupState = true;
+      startupState = false;
       movingState = false;
       targetBrightness = STARTUP_BRIGHTNESS;
     }
@@ -242,29 +230,16 @@ void loop() {
   }
 
   bool lightsOn = lencoLED.lightsOn();
-  bool chargingLightsOn = lencoLED.ledEnabled && refloatChargingState;
   if (refloatDisabledState) {
     fill_solid(forward_leds, lencoLED.numLedsForward, CRGB::Black);
     fill_solid(reverse_leds, lencoLED.numLedsReverse, CRGB::Black);
     fill_solid(footpad_leds, lencoLED.numLedsFootpad, CRGB::Black);
-  } else if (!lightsOn && !chargingLightsOn) {
+  } else if (!lightsOn) {
     fill_solid(forward_leds, lencoLED.numLedsForward, CRGB::Black);
     fill_solid(reverse_leds, lencoLED.numLedsReverse, CRGB::Black);
-    if (refloatFaultState || refloatChargingState) {
-      fill_solid(footpad_leds, lencoLED.numLedsFootpad, CRGB::Black);
-    }
   }
 
-  if (lightsOn && refloatFaultState) {
-    CRGB faultColor = ((millis() / 500) % 2 == 0) ? CRGB(255, 0, 0) : CRGB::Black;
-    fill_solid(forward_leds, lencoLED.numLedsForward, faultColor);
-    fill_solid(reverse_leds, lencoLED.numLedsReverse, faultColor);
-    fill_solid(footpad_leds, lencoLED.numLedsFootpad, faultColor);
-  } else if (chargingLightsOn) {
-    fill_solid(forward_leds, lencoLED.numLedsForward, CRGB::Black);
-    fill_solid(reverse_leds, lencoLED.numLedsReverse, CRGB::Black);
-    batteryPercentStartupLEDs();
-  } else if (lightsOn && ledFadeActive) {
+  if (lightsOn && ledFadeActive) {
     if (fadeForwardReverse) {
       for (int i = 0; i < lencoLED.numLedsForward; i++) {
         forward_leds[i].fadeToBlackBy(60);
@@ -291,7 +266,7 @@ void loop() {
   }
 
   // === Brake logic ===
-  if (!refloatFaultState && !refloatChargingState && !refloatDisabledState && millis() - lastBrakeCheckMillis >= brakeCheckInterval) {
+  if (!refloatDisabledState && millis() - lastBrakeCheckMillis >= brakeCheckInterval) {
     checkBraking();
     lastBrakeCheckMillis = millis();
   }
@@ -300,7 +275,7 @@ void loop() {
   if (millis() - lastLEDUpdateMillis >= LED_UPDATE_INTERVAL) {
     currentBrightness += constrain(targetBrightness - currentBrightness, -5, 5);
     clearInactiveLEDs();
-    float brightnessScale = chargingLightsOn ? lencoLED.chargingBrightnessScale() : (lightsOn ? lencoLED.brightnessScale() : 1.0f);
+    float brightnessScale = lightsOn ? lencoLED.brightnessScale() : 1.0f;
     int scaledBrightness = constrain((int)(currentBrightness * brightnessScale), 0, 255);
     FastLED.setBrightness(scaledBrightness);
     FastLED.show();
