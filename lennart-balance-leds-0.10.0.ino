@@ -13,9 +13,6 @@ const uint8_t MAX_LEDS_PER_STRIP = LencoLED::MAX_LED_COUNT;
 #define BATTERY_INDICATOR_DURATION 5000 // 5 seconds
 #define STARTUP_ANIMATION_DURATION 5000 // 5 seconds
 
-#define THRESHOLD 5000
-#define FAST_DELAY 20
-#define SLOW_DELAY 50
 #define STARTUP_BRIGHTNESS 30
 #define NORMAL_BRIGHTNESS 255
 
@@ -40,9 +37,9 @@ BalanceBeeper balanceBeeper;
 LencoLED lencoLED;
 
 // Global variables for ESC data
-double globalErpm = 0.0;
-double globalVoltage = 0.0;
-double globalDutyCycle = 0.0;
+float globalErpm = 0.0f;
+float globalVoltage = 0.0f;
+float globalDutyCycle = 0.0f;
 
 // Polling configuration
 const unsigned long CAN_POLLING_INTERVAL = 100; // every 100ms
@@ -70,10 +67,8 @@ bool isInitialStartup = true;
 unsigned long startupBeginMS = 0;
 bool startupAnimationComplete = false;
 
-int currentLEDIndex = 0;
 int direction = FORWARD;
 int previousDirection = FORWARD;
-int animationDirFlag = 1;
 int previousErpm = 0;
 
 bool ledFadeActive = false;
@@ -165,14 +160,10 @@ void loop() {
   balanceBeeper.loop(globalDutyCycle, globalErpm, globalVoltage, lencoLED.lowVoltage);
 
   // === Determine direction and state ===
-  bool refloatFaultState = false;
-  bool refloatChargingState = false;
   bool refloatDisabledState = false;
 
   if (lencoLED.refloat_active && lencoLED.refloat_state != REFLOAT_STATE_UNKNOWN) {
     uint8_t refloatState = lencoLED.refloat_state;
-    refloatFaultState = (refloatState >= 6 && refloatState <= 9) || (refloatState >= 12 && refloatState <= 13);
-    refloatChargingState = (refloatState == 14);
     refloatDisabledState = (refloatState == 15);
 
     if (refloatState >= 1 && refloatState <= 3) {
@@ -184,7 +175,7 @@ void loop() {
         direction = REVERSE;
       }
       targetBrightness = NORMAL_BRIGHTNESS;
-    } else if (refloatState == 0 || refloatState == 4 || refloatState == 5 || refloatState == 11) {
+    } else if (!refloatDisabledState) {
       if (movingState && !startupState)
       {
         returningToStartup = true;
@@ -192,20 +183,12 @@ void loop() {
       startupState = true;
       movingState = false;
       targetBrightness = STARTUP_BRIGHTNESS;
-    } else if (refloatFaultState || refloatChargingState || refloatDisabledState) {
-      if (movingState && !startupState)
-      {
-        returningToStartup = true;
-      }
-      startupState = false;
-      movingState = false;
-      targetBrightness = refloatFaultState ? NORMAL_BRIGHTNESS : STARTUP_BRIGHTNESS;
     } else {
       if (movingState && !startupState)
       {
         returningToStartup = true;
       }
-      startupState = true;
+      startupState = false;
       movingState = false;
       targetBrightness = STARTUP_BRIGHTNESS;
     }
@@ -247,29 +230,16 @@ void loop() {
   }
 
   bool lightsOn = lencoLED.lightsOn();
-  bool chargingLightsOn = lencoLED.ledEnabled && refloatChargingState;
   if (refloatDisabledState) {
     fill_solid(forward_leds, lencoLED.numLedsForward, CRGB::Black);
     fill_solid(reverse_leds, lencoLED.numLedsReverse, CRGB::Black);
     fill_solid(footpad_leds, lencoLED.numLedsFootpad, CRGB::Black);
-  } else if (!lightsOn && !chargingLightsOn) {
+  } else if (!lightsOn) {
     fill_solid(forward_leds, lencoLED.numLedsForward, CRGB::Black);
     fill_solid(reverse_leds, lencoLED.numLedsReverse, CRGB::Black);
-    if (refloatFaultState || refloatChargingState) {
-      fill_solid(footpad_leds, lencoLED.numLedsFootpad, CRGB::Black);
-    }
   }
 
-  if (lightsOn && refloatFaultState) {
-    CRGB faultColor = ((millis() / 500) % 2 == 0) ? CRGB(255, 0, 0) : CRGB::Black;
-    fill_solid(forward_leds, lencoLED.numLedsForward, faultColor);
-    fill_solid(reverse_leds, lencoLED.numLedsReverse, faultColor);
-    fill_solid(footpad_leds, lencoLED.numLedsFootpad, faultColor);
-  } else if (chargingLightsOn) {
-    fill_solid(forward_leds, lencoLED.numLedsForward, CRGB::Black);
-    fill_solid(reverse_leds, lencoLED.numLedsReverse, CRGB::Black);
-    batteryPercentStartupLEDs();
-  } else if (lightsOn && ledFadeActive) {
+  if (lightsOn && ledFadeActive) {
     if (fadeForwardReverse) {
       for (int i = 0; i < lencoLED.numLedsForward; i++) {
         forward_leds[i].fadeToBlackBy(60);
@@ -296,7 +266,7 @@ void loop() {
   }
 
   // === Brake logic ===
-  if (!refloatFaultState && !refloatChargingState && !refloatDisabledState && millis() - lastBrakeCheckMillis >= brakeCheckInterval) {
+  if (!refloatDisabledState && millis() - lastBrakeCheckMillis >= brakeCheckInterval) {
     checkBraking();
     lastBrakeCheckMillis = millis();
   }
@@ -305,7 +275,7 @@ void loop() {
   if (millis() - lastLEDUpdateMillis >= LED_UPDATE_INTERVAL) {
     currentBrightness += constrain(targetBrightness - currentBrightness, -5, 5);
     clearInactiveLEDs();
-    float brightnessScale = chargingLightsOn ? lencoLED.chargingBrightnessScale() : (lightsOn ? lencoLED.brightnessScale() : 1.0f);
+    float brightnessScale = lightsOn ? lencoLED.brightnessScale() : 1.0f;
     int scaledBrightness = constrain((int)(currentBrightness * brightnessScale), 0, 255);
     FastLED.setBrightness(scaledBrightness);
     FastLED.show();
@@ -356,11 +326,13 @@ void checkBraking() {
 }
 
 void knightRider(int red, int green, int blue, int ridingWidth) {
+  static int pos = 0;
+  static int animDir = 1;
+
   CRGB *leds = (direction == FORWARD) ? forward_leds : reverse_leds;
   int ledCount = (direction == FORWARD) ? lencoLED.numLedsForward : lencoLED.numLedsReverse;
-  ridingWidth = constrain(ridingWidth, 1, max(1, ledCount - 2));
-  int travel = max(1, ledCount - ridingWidth - 2);
-  if (!leds) return;
+  ridingWidth = constrain(ridingWidth, 1, ledCount);
+  int travel = max(0, ledCount - ridingWidth);
 
   const long IDLE_ERPM = 200;
   if (abs(globalErpm) < IDLE_ERPM) {
@@ -382,15 +354,12 @@ void knightRider(int red, int green, int blue, int ridingWidth) {
       leds[i].fadeToBlackBy(60);
     }
 
-    currentLEDIndex = constrain(currentLEDIndex, 0, travel);
+    pos = constrain(pos, 0, travel);
 
     for (int j = -2; j < ridingWidth + 2; j++) {
-      int idx = currentLEDIndex + j;
+      int idx = pos + j;
       if (idx >= 0 && idx < ledCount) {
-        int fadeFactor;
-        if (j < 0 || j >= ridingWidth) fadeFactor = 30;
-        else fadeFactor = 100;
-
+        int fadeFactor = (j < 0 || j >= ridingWidth) ? 30 : 100;
         leds[idx].setRGB(
           (red   * fadeFactor) / 100,
           (green * fadeFactor) / 100,
@@ -399,13 +368,10 @@ void knightRider(int red, int green, int blue, int ridingWidth) {
       }
     }
 
-    currentLEDIndex += animationDirFlag;
+    pos += animDir;
 
-    if (currentLEDIndex >= travel) {
-      animationDirFlag = -1;
-    } else if (currentLEDIndex <= 0) {
-      animationDirFlag = 1;
-    }
+    if (pos >= travel) animDir = -1;
+    else if (pos <= 0)  animDir =  1;
 
     clearInactiveLEDs();
     FastLED.show();
@@ -432,17 +398,17 @@ void processStartupAction() {
     return;
   }
 
-  if (globalVoltage == 0.0) {
+  if (globalVoltage < 0.1f) {
     warningLEDs();
     return;
   }
 
-  if (globalVoltage > 0.0 && (globalVoltage - lencoLED.lowVoltage) / (lencoLED.fullVoltage - lencoLED.lowVoltage) <= 0.10) {
+  if (globalVoltage >= 0.1f && (globalVoltage - lencoLED.lowVoltage) / (lencoLED.fullVoltage - lencoLED.lowVoltage) <= 0.10) {
     lowVoltageWarningLEDs();
     return;
   }
 
-  if (!voltageAcquired && globalVoltage != 0.0) {
+  if (!voltageAcquired && globalVoltage >= 0.1f) {
     voltageAcquired = true;
     voltageAcquiredMS = millis();
   }
