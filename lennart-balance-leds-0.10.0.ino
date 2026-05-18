@@ -653,20 +653,28 @@ void renderRidingFootpad() {
 
 void footpadHandtest() {
   fill_solid(footpad_leds, lencoLED.numLedsFootpad, CRGB::Black);
+  if (lencoLED.numLedsFootpad == 0) return;
+
   int c = lencoLED.numLedsFootpad / 2;
   int start = max(0, c - 2);
   int end = min((int)lencoLED.numLedsFootpad - 1, c + 1);
-  float phase = (millis() % 1000) / 1000.0f;
-  float wave = (sin(phase * TWO_PI) + 1.0f) * 0.5f;
-  uint8_t hue = (uint8_t)(wave * 30.0f);
 
+  CRGB centerColor = (millis() / 500) % 2 == 0 ? CRGB(200, 0, 0) : CRGB(200, 70, 0);
   for (int i = start; i <= end; i++) {
-    footpad_leds[i] = CHSV(hue, 255, 200);
+    footpad_leds[i] = centerColor;
   }
-  if (lencoLED.numLedsFootpad > 0) {
-    footpad_leds[0] = CRGB(0, 0, 80);
-    footpad_leds[lencoLED.numLedsFootpad - 1] = CRGB(0, 0, 80);
-  }
+
+  bool leftTriggered = lencoLED.refloat_active
+      ? (lencoLED.refloat_footpad == FOOT_LEFT || lencoLED.refloat_footpad == FOOT_BOTH)
+      : (esc.adc1 > esc.footpadThreshold);
+  bool rightTriggered = lencoLED.refloat_active
+      ? (lencoLED.refloat_footpad == FOOT_RIGHT || lencoLED.refloat_footpad == FOOT_BOTH)
+      : (esc.adc2 > esc.footpadThreshold);
+
+  if (leftTriggered)
+    footpad_leds[0].setRGB(lencoLED.ledColors[7][0], lencoLED.ledColors[7][1], lencoLED.ledColors[7][2]);
+  if (rightTriggered)
+    footpad_leds[lencoLED.numLedsFootpad - 1].setRGB(lencoLED.ledColors[7][0], lencoLED.ledColors[7][1], lencoLED.ledColors[7][2]);
 }
 
 void footpadRainbow() {
