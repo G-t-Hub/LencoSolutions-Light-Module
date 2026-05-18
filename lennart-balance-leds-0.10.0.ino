@@ -88,8 +88,13 @@ bool isBraking = false;
 
 void knightRider(int red, int green, int blue, int ridingWidth);
 void checkBraking();
-void footpadKnightRider();
+bool footpadKnightRider();
 void footpadDutyCycleIndicator();
+void renderRidingFootpad();
+void footpadHandtest();
+void footpadRainbow();
+void disabledFootpadIndicator();
+void scaleFootpadLeds(float scale);
 void requestLEDFade(bool forwardReverse, bool footpad);
 void clearInactiveLEDs();
 
@@ -161,10 +166,12 @@ void loop() {
 
   // === Determine direction and state ===
   bool refloatDisabledState = false;
+  bool refloatFlywheelState = false;
 
   if (lencoLED.refloat_active && lencoLED.refloat_state != REFLOAT_STATE_UNKNOWN) {
     uint8_t refloatState = lencoLED.refloat_state;
     refloatDisabledState = (refloatState == 15);
+    refloatFlywheelState = (refloatState == 5);
 
     if (refloatState >= 1 && refloatState <= 3) {
       startupState = false;
@@ -233,40 +240,45 @@ void loop() {
   if (refloatDisabledState) {
     fill_solid(forward_leds, lencoLED.numLedsForward, CRGB::Black);
     fill_solid(reverse_leds, lencoLED.numLedsReverse, CRGB::Black);
-    fill_solid(footpad_leds, lencoLED.numLedsFootpad, CRGB::Black);
-  } else if (!lightsOn) {
-    fill_solid(forward_leds, lencoLED.numLedsForward, CRGB::Black);
-    fill_solid(reverse_leds, lencoLED.numLedsReverse, CRGB::Black);
-  }
+    disabledFootpadIndicator();
+  } else {
+    if (!lightsOn) {
+      fill_solid(forward_leds, lencoLED.numLedsForward, CRGB::Black);
+      fill_solid(reverse_leds, lencoLED.numLedsReverse, CRGB::Black);
+    }
 
-  if (lightsOn && ledFadeActive) {
-    if (fadeForwardReverse) {
-      for (int i = 0; i < lencoLED.numLedsForward; i++) {
-        forward_leds[i].fadeToBlackBy(60);
+    if (lightsOn && ledFadeActive) {
+      if (fadeForwardReverse) {
+        for (int i = 0; i < lencoLED.numLedsForward; i++) {
+          forward_leds[i].fadeToBlackBy(60);
+        }
+        for (int i = 0; i < lencoLED.numLedsReverse; i++) {
+          reverse_leds[i].fadeToBlackBy(60);
+        }
       }
-      for (int i = 0; i < lencoLED.numLedsReverse; i++) {
-        reverse_leds[i].fadeToBlackBy(60);
+      if (fadeFootpad) {
+        for (int i = 0; i < lencoLED.numLedsFootpad; i++) {
+          footpad_leds[i].fadeToBlackBy(60);
+        }
       }
-    }
-    if (fadeFootpad) {
-      for (int i = 0; i < lencoLED.numLedsFootpad; i++) {
-        footpad_leds[i].fadeToBlackBy(60);
+    } else if (lightsOn && refloatFlywheelState && !ledFadeActive) {
+      staticStartupLEDs();
+      footpadRainbow();
+    } else if (!ledFadeActive && startupState) {
+      processStartupAction();
+    } else if (!ledFadeActive && movingState) {
+      if (lightsOn) {
+        int rideLedCount = (direction == FORWARD) ? lencoLED.numLedsForward : lencoLED.numLedsReverse;
+        knightRider(lencoLED.ledColors[0][0], lencoLED.ledColors[0][1], lencoLED.ledColors[0][2], max(1, rideLedCount / 3));
+        renderRidingFootpad();
+      } else {
+        fill_solid(footpad_leds, lencoLED.numLedsFootpad, CRGB::Black);
       }
-    }
-  } else if (!ledFadeActive && startupState) {
-    processStartupAction();
-  } else if (!ledFadeActive && movingState) {
-    if (lightsOn) {
-      int rideLedCount = (direction == FORWARD) ? lencoLED.numLedsForward : lencoLED.numLedsReverse;
-      knightRider(lencoLED.ledColors[0][0], lencoLED.ledColors[0][1], lencoLED.ledColors[0][2], max(1, rideLedCount / 3));
-      footpadDutyCycleIndicator();
-    } else {
-      fill_solid(footpad_leds, lencoLED.numLedsFootpad, CRGB::Black);
     }
   }
 
   // === Brake logic ===
-  if (!refloatDisabledState && millis() - lastBrakeCheckMillis >= brakeCheckInterval) {
+  if (!refloatDisabledState && !lencoLED.refloat_handtest && millis() - lastBrakeCheckMillis >= brakeCheckInterval) {
     checkBraking();
     lastBrakeCheckMillis = millis();
   }
@@ -275,7 +287,12 @@ void loop() {
   if (millis() - lastLEDUpdateMillis >= LED_UPDATE_INTERVAL) {
     currentBrightness += constrain(targetBrightness - currentBrightness, -5, 5);
     clearInactiveLEDs();
-    float brightnessScale = lightsOn ? lencoLED.brightnessScale() : 1.0f;
+    float brightnessScale = 1.0f;
+    if (refloatDisabledState) {
+      brightnessScale = 1.0f;
+    } else if (lightsOn) {
+      brightnessScale = movingState ? lencoLED.ridingBrightnessScale() : lencoLED.idleBrightnessScale();
+    }
     int scaledBrightness = constrain((int)(currentBrightness * brightnessScale), 0, 255);
     FastLED.setBrightness(scaledBrightness);
     FastLED.show();
@@ -395,6 +412,11 @@ void processStartupAction() {
   // Animation complete — remaining footpad patterns only show when LEDs are enabled.
   if (!lencoLED.lightsOn()) {
     fill_solid(footpad_leds, lencoLED.numLedsFootpad, CRGB::Black);
+    return;
+  }
+
+  if (lencoLED.refloat_handtest && !movingState) {
+    footpadHandtest();
     return;
   }
 
@@ -555,7 +577,7 @@ void singleFootpadTriggeredStartupLEDs() {
   }
 }
 
-void footpadKnightRider() {
+bool footpadKnightRider() {
   static int   pos        = 0;
   static int   dir        = 1;
   static unsigned long lastUpdate = 0;
@@ -566,7 +588,7 @@ void footpadKnightRider() {
   const int   fadeDistance = (int)lencoLED.fpFadeAmount;
   const int   travel      = max(0, lencoLED.numLedsFootpad - ridingWidth);
 
-  if (millis() - lastUpdate < lencoLED.fpAnimationDelay) return;
+  if (millis() - lastUpdate < lencoLED.fpAnimationDelay) return false;
   lastUpdate = millis();
 
   pos = constrain(pos, 0, travel);
@@ -603,6 +625,84 @@ void footpadKnightRider() {
   if (pos >= travel) dir = -1;
   else if (pos <= 0)  dir =  1;
   pos += dir;
+  return true;
+}
+
+void renderRidingFootpad() {
+  bool updated = true;
+  switch (lencoLED.ridingFootpadMode) {
+    case LencoLED::RIDING_FOOTPAD_BATTERY:
+      batteryPercentStartupLEDs();
+      break;
+    case LencoLED::RIDING_FOOTPAD_NONE:
+      fill_solid(footpad_leds, lencoLED.numLedsFootpad, CRGB::Black);
+      break;
+    case LencoLED::RIDING_FOOTPAD_KNIGHTRIDER:
+      updated = footpadKnightRider();
+      break;
+    case LencoLED::RIDING_FOOTPAD_DUTY:
+    default:
+      footpadDutyCycleIndicator();
+      break;
+  }
+
+  if (updated && lencoLED.ridingFootpadMode != LencoLED::RIDING_FOOTPAD_NONE) {
+    scaleFootpadLeds(lencoLED.statusBrightnessScale());
+  }
+}
+
+void footpadHandtest() {
+  fill_solid(footpad_leds, lencoLED.numLedsFootpad, CRGB::Black);
+  int c = lencoLED.numLedsFootpad / 2;
+  int start = max(0, c - 2);
+  int end = min((int)lencoLED.numLedsFootpad - 1, c + 1);
+  float phase = (millis() % 1000) / 1000.0f;
+  float wave = (sin(phase * TWO_PI) + 1.0f) * 0.5f;
+  uint8_t hue = (uint8_t)(wave * 30.0f);
+
+  for (int i = start; i <= end; i++) {
+    footpad_leds[i] = CHSV(hue, 255, 200);
+  }
+  if (lencoLED.numLedsFootpad > 0) {
+    footpad_leds[0] = CRGB(0, 0, 80);
+    footpad_leds[lencoLED.numLedsFootpad - 1] = CRGB(0, 0, 80);
+  }
+}
+
+void footpadRainbow() {
+  static uint8_t rainbowHue = 0;
+  static unsigned long lastRainbowUpdate = 0;
+  if (millis() - lastRainbowUpdate < 30) return;
+  lastRainbowUpdate = millis();
+  rainbowHue += 2;
+
+  for (int i = 0; i < lencoLED.numLedsFootpad; i++) {
+    uint8_t hue = rainbowHue + (uint8_t)((uint16_t)i * 255 / lencoLED.numLedsFootpad);
+    footpad_leds[i] = CHSV(hue, 255, 200);
+  }
+  scaleFootpadLeds(lencoLED.statusBrightnessScale());
+}
+
+void disabledFootpadIndicator() {
+  fill_solid(footpad_leds, lencoLED.numLedsFootpad, CRGB::Black);
+  if (lencoLED.numLedsFootpad == 0) return;
+
+  int c = lencoLED.numLedsFootpad / 2;
+  if (c > 0) {
+    footpad_leds[c - 1] = CRGB(255, 0, 0);
+  }
+  footpad_leds[c] = CRGB(255, 0, 0);
+}
+
+void scaleFootpadLeds(float scale) {
+  uint8_t amount = constrain((int)(scale * 255.0f), 0, 255);
+  if (amount == 0) {
+    fill_solid(footpad_leds, lencoLED.numLedsFootpad, CRGB::Black);
+    return;
+  }
+  for (int i = 0; i < lencoLED.numLedsFootpad; i++) {
+    footpad_leds[i].nscale8_video(amount);
+  }
 }
 
 void footpadDutyCycleIndicator() {

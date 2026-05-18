@@ -22,9 +22,9 @@ static const uint8_t REFLOAT_STATE_UNKNOWN = 0xFF;
 static const unsigned long REFLOAT_POLL_TIMEOUT_MS = 2000;
 static const unsigned long LIFT_FADE_TIME_MS = 500;
 
-// EEPROM layout (49 bytes total)
-#define EEPROM_SIZE            52
-#define EEPROM_MAGIC           0xABD1
+// EEPROM layout (56 bytes total)
+#define EEPROM_SIZE            56
+#define EEPROM_MAGIC           0xABD2
 #define EEPROM_MAGIC_ADDR      0  // uint16: EEPROM_MAGIC if initialized
 #define EEPROM_COLORS_ADDR     2  // 36 bytes: 12 groups × 3 (RGB)
 #define EEPROM_THRESH_ADDR    38  // uint16: footpadThreshold × 100
@@ -37,6 +37,10 @@ static const unsigned long LIFT_FADE_TIME_MS = 500;
 #define EEPROM_LED_FORWARD_ADDR 49 // uint8: active forward LED count
 #define EEPROM_LED_REVERSE_ADDR 50 // uint8: active reverse LED count
 #define EEPROM_LED_FOOTPAD_ADDR 51 // uint8: active footpad LED count
+#define EEPROM_RIDING_FOOTPAD_MODE_ADDR 52 // uint8: riding footpad animation mode
+#define EEPROM_IDLE_BRIGHTNESS_ADDR 53      // uint8: idle brightness percent
+#define EEPROM_RIDING_BRIGHTNESS_ADDR 54    // uint8: riding brightness percent
+#define EEPROM_STATUS_BRIGHTNESS_ADDR 55    // uint8: riding footpad brightness percent
 
 class LencoLED {
 public:
@@ -47,7 +51,11 @@ public:
         DEFAULT_FOOTPAD_LED_COUNT = 10,
         DEFAULT_FP_RIDING_WIDTH = 2,
         DEFAULT_FP_ANIMATION_DELAY = 85,
-        DEFAULT_FP_FADE_AMOUNT = 3
+        DEFAULT_FP_FADE_AMOUNT = 3,
+        RIDING_FOOTPAD_DUTY = 0,
+        RIDING_FOOTPAD_BATTERY = 1,
+        RIDING_FOOTPAD_NONE = 2,
+        RIDING_FOOTPAD_KNIGHTRIDER = 3
     };
 
     bool    ledEnabled      = true;
@@ -56,6 +64,7 @@ public:
     uint8_t refloat_brightness = 100;
     unsigned long last_poll_ms = 0;
     uint8_t refloat_state = REFLOAT_STATE_UNKNOWN;
+    bool    refloat_handtest = false;
     uint8_t refloat_pitch_deg = 0;
     bool    board_lifted = false;
     float   lift_fade_scale = 1.0f;
@@ -64,13 +73,16 @@ public:
     float   refloat_voltage = 0.0f;
     uint8_t refloat_footpad = FOOT_NONE;
     bool    lights_on = true;
-    float   brightness_scale = 1.0f;
     uint8_t fpRidingWidth = DEFAULT_FP_RIDING_WIDTH;
     uint16_t fpAnimationDelay = DEFAULT_FP_ANIMATION_DELAY;
     uint8_t fpFadeAmount = DEFAULT_FP_FADE_AMOUNT;
     uint8_t numLedsForward = DEFAULT_FORWARD_LED_COUNT;
     uint8_t numLedsReverse = DEFAULT_REVERSE_LED_COUNT;
     uint8_t numLedsFootpad = DEFAULT_FOOTPAD_LED_COUNT;
+    uint8_t ridingFootpadMode = RIDING_FOOTPAD_DUTY;
+    uint8_t idleBrightness = 30;
+    uint8_t ridingBrightness = 100;
+    uint8_t statusBrightness = 100;
     double  lowVoltage      = 58.9;
     double  fullVoltage     = 79.8;
     uint8_t ledColors[12][3] = {
@@ -92,6 +104,8 @@ public:
     void init(ESC& esc) {
         setDefaultLedCounts();
         setDefaultFootpadSettings();
+        setDefaultRidingFootpadMode();
+        setDefaultBrightnessSettings();
         uint16_t magic;
         EEPROM.get(EEPROM_MAGIC_ADDR, magic);
         if (magic != EEPROM_MAGIC) {
@@ -109,7 +123,9 @@ public:
         refloat_active = true;
         uint8_t brightness = data[LCM_POLL_BRIGHTNESS_IDX];
         refloat_brightness = brightness > 100 ? 100 : brightness;
-        refloat_state = data[LCM_POLL_STATE_IDX] & 0x0F;
+        uint8_t stateByte = data[LCM_POLL_STATE_IDX];
+        refloat_state = stateByte & 0x0F;
+        refloat_handtest = (stateByte & 0x80) != 0;
         if (!isRunningCompatState(refloat_state)) {
             refloat_pitch_deg = data[LCM_POLL_DUTY_PITCH_IDX];
         }
@@ -123,19 +139,22 @@ public:
         updateLiftState();
         updateLiftFade();
         lights_on = ledEnabled && (!refloat_active || refloat_brightness > 0);
-        brightness_scale = refloat_active ? refloat_brightness / 100.0f : 1.0f;
     }
 
     bool lightsOn() const {
         return lights_on;
     }
 
-    float brightnessScale() const {
-        return brightness_scale * lift_fade_scale;
+    float idleBrightnessScale() const {
+        return (idleBrightness / 100.0f) * lift_fade_scale;
     }
 
-    bool refloatRunning() const {
-        return isRunningCompatState(refloat_state);
+    float ridingBrightnessScale() const {
+        return ridingBrightness / 100.0f;
+    }
+
+    float statusBrightnessScale() const {
+        return statusBrightness / 100.0f;
     }
 
     // Call from loop() when esc.appFrameAvailable is true
@@ -213,6 +232,20 @@ public:
                     }
                 }
                 break;
+            case 114: // CMD_SET_RIDING_FOOTPAD_MODE
+                if (len >= 2 && validRidingFootpadMode(data[1])) {
+                    ridingFootpadMode = data[1];
+                    saveRidingFootpadMode();
+                }
+                break;
+            case 115: // CMD_SET_BRIGHTNESS_SETTINGS
+                if (len >= 4 && validBrightnessSettings(data[1], data[2], data[3])) {
+                    idleBrightness = data[1];
+                    ridingBrightness = data[2];
+                    statusBrightness = data[3];
+                    saveBrightnessSettings();
+                }
+                break;
         }
     }
 
@@ -277,6 +310,18 @@ private:
                validLedCount(footpadCount);
     }
 
+    static bool validRidingFootpadMode(uint8_t mode) {
+        return mode <= RIDING_FOOTPAD_KNIGHTRIDER;
+    }
+
+    static bool validBrightness(uint8_t value) {
+        return value <= 100;
+    }
+
+    static bool validBrightnessSettings(uint8_t idle, uint8_t riding, uint8_t status) {
+        return validBrightness(idle) && validBrightness(riding) && validBrightness(status);
+    }
+
     void setDefaultFootpadSettings() {
         fpRidingWidth = DEFAULT_FP_RIDING_WIDTH;
         fpAnimationDelay = DEFAULT_FP_ANIMATION_DELAY;
@@ -287,6 +332,16 @@ private:
         numLedsForward = DEFAULT_FORWARD_LED_COUNT;
         numLedsReverse = DEFAULT_REVERSE_LED_COUNT;
         numLedsFootpad = DEFAULT_FOOTPAD_LED_COUNT;
+    }
+
+    void setDefaultRidingFootpadMode() {
+        ridingFootpadMode = RIDING_FOOTPAD_DUTY;
+    }
+
+    void setDefaultBrightnessSettings() {
+        idleBrightness = 30;
+        ridingBrightness = 100;
+        statusBrightness = 100;
     }
 
     void loadFromEEPROM(ESC& esc) {
@@ -320,6 +375,20 @@ private:
             setDefaultFootpadSettings();
             saveFootpadSettings();
         }
+
+        ridingFootpadMode = EEPROM.read(EEPROM_RIDING_FOOTPAD_MODE_ADDR);
+        if (!validRidingFootpadMode(ridingFootpadMode)) {
+            setDefaultRidingFootpadMode();
+            saveRidingFootpadMode();
+        }
+
+        idleBrightness = EEPROM.read(EEPROM_IDLE_BRIGHTNESS_ADDR);
+        ridingBrightness = EEPROM.read(EEPROM_RIDING_BRIGHTNESS_ADDR);
+        statusBrightness = EEPROM.read(EEPROM_STATUS_BRIGHTNESS_ADDR);
+        if (!validBrightnessSettings(idleBrightness, ridingBrightness, statusBrightness)) {
+            setDefaultBrightnessSettings();
+            saveBrightnessSettings();
+        }
     }
 
     void saveAll(double footpadThreshold) {
@@ -332,6 +401,8 @@ private:
         EEPROM.update(EEPROM_LED_STATE_ADDR, startupLedState);
         saveLedCounts();
         saveFootpadSettings();
+        saveRidingFootpadMode();
+        saveBrightnessSettings();
     }
 
     void saveColor(uint8_t id) {
@@ -360,5 +431,15 @@ private:
         EEPROM.update(EEPROM_FP_DELAY_ADDR, (uint8_t)(fpAnimationDelay >> 8));
         EEPROM.update(EEPROM_FP_DELAY_ADDR + 1, (uint8_t)(fpAnimationDelay & 0xFF));
         EEPROM.update(EEPROM_FP_FADE_ADDR, fpFadeAmount);
+    }
+
+    void saveRidingFootpadMode() {
+        EEPROM.update(EEPROM_RIDING_FOOTPAD_MODE_ADDR, ridingFootpadMode);
+    }
+
+    void saveBrightnessSettings() {
+        EEPROM.update(EEPROM_IDLE_BRIGHTNESS_ADDR, idleBrightness);
+        EEPROM.update(EEPROM_RIDING_BRIGHTNESS_ADDR, ridingBrightness);
+        EEPROM.update(EEPROM_STATUS_BRIGHTNESS_ADDR, statusBrightness);
     }
 };
