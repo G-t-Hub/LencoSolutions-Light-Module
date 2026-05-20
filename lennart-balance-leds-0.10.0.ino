@@ -715,15 +715,15 @@ void scaleFootpadLeds(float scale) {
 
 void footpadDutyCycleIndicator() {
   double dutyAbs = abs(globalDutyCycle);
-  dutyAbs = constrain(dutyAbs, 0.0, 100.0);
+  dutyAbs = constrain(dutyAbs, 0.0, 1.0);
 
-  int numLedsToLight = (int)((dutyAbs / 100.0) * lencoLED.numLedsFootpad);
+  int numLedsToLight = (int)(dutyAbs * lencoLED.numLedsFootpad);
   numLedsToLight = constrain(numLedsToLight, 0, lencoLED.numLedsFootpad);
 
   int r, g, b;
-  if (dutyAbs >= 80.0) {
+  if (dutyAbs >= 0.80) {
     r = lencoLED.ledColors[11][0]; g = lencoLED.ledColors[11][1]; b = lencoLED.ledColors[11][2];
-  } else if (dutyAbs >= 70.0) {
+  } else if (dutyAbs >= 0.70) {
     r = lencoLED.ledColors[10][0]; g = lencoLED.ledColors[10][1]; b = lencoLED.ledColors[10][2];
   } else {
     r = lencoLED.ledColors[9][0];  g = lencoLED.ledColors[9][1];  b = lencoLED.ledColors[9][2];
