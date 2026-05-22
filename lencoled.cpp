@@ -11,8 +11,21 @@
 #define LCM_POLL_STATE_IDX 3
 #define LCM_POLL_DUTY_PITCH_IDX 5
 #define LCM_POLL_ERPM_IDX 6
+#define LCM_POLL_CURRENT_IDX 8
 #define LCM_POLL_VOLTAGE_IDX 10
 #define LCM_POLL_BRIGHTNESS_IDX 12
+#define ALLDATA_STATE_IDX 10
+#define ALLDATA_FOOTPAD_IDX 11
+#define ALLDATA_ADC1_IDX 12
+#define ALLDATA_ADC2_IDX 13
+#define ALLDATA_VOLTAGE_IDX 23
+#define ALLDATA_ERPM_IDX 25
+#define ALLDATA_CURRENT_IDX 31
+#define ALLDATA_DUTY_IDX 33
+#define ALLDATA_ROLL_IDX 8
+#define ALLDATA_FET_TEMP_IDX 39
+#define ALLDATA_MOTOR_TEMP_IDX 40
+#define BATTERY_LEVEL_IDX 3
 
 static const uint8_t FOOT_NONE = 0;
 static const uint8_t FOOT_LEFT = 1;
@@ -21,26 +34,39 @@ static const uint8_t FOOT_BOTH = 3;
 static const uint8_t REFLOAT_STATE_UNKNOWN = 0xFF;
 static const unsigned long REFLOAT_POLL_TIMEOUT_MS = 2000;
 static const unsigned long LIFT_FADE_TIME_MS = 500;
+static const unsigned long REFLOAT_DISABLE_GRACE_MS = 5000;
+static const uint8_t REFLOAT_DISABLE_SHORT_RESPONSES = 6;
+static const uint8_t REFLOAT_ACTIVE_DISABLE_SHORT_RESPONSES = 2;
 
-// EEPROM layout (56 bytes total)
-#define EEPROM_SIZE            56
-#define EEPROM_MAGIC           0xABD2
+// EEPROM layout (86 bytes total)
+#define EEPROM_SIZE            87
+#define EEPROM_MAGIC           0xABD6
 #define EEPROM_MAGIC_ADDR      0  // uint16: EEPROM_MAGIC if initialized
-#define EEPROM_COLORS_ADDR     2  // 36 bytes: 12 groups × 3 (RGB)
-#define EEPROM_THRESH_ADDR    38  // uint16: footpadThreshold × 100
-#define EEPROM_FULL_V_ADDR    40  // uint16: fullVoltage × 10
-#define EEPROM_LOW_V_ADDR     42  // uint16: lowVoltage × 10
-#define EEPROM_LED_STATE_ADDR 44  // uint8: startup LED state (0/1)
-#define EEPROM_FP_WIDTH_ADDR  45  // uint8: footpad knight rider blob width
-#define EEPROM_FP_DELAY_ADDR  46  // uint16: footpad knight rider step delay, big-endian
-#define EEPROM_FP_FADE_ADDR   48  // uint8: footpad knight rider tail fade
-#define EEPROM_LED_FORWARD_ADDR 49 // uint8: active forward LED count
-#define EEPROM_LED_REVERSE_ADDR 50 // uint8: active reverse LED count
-#define EEPROM_LED_FOOTPAD_ADDR 51 // uint8: active footpad LED count
-#define EEPROM_RIDING_FOOTPAD_MODE_ADDR 52 // uint8: riding footpad animation mode
-#define EEPROM_IDLE_BRIGHTNESS_ADDR 53      // uint8: idle brightness percent
-#define EEPROM_RIDING_BRIGHTNESS_ADDR 54    // uint8: riding brightness percent
-#define EEPROM_STATUS_BRIGHTNESS_ADDR 55    // uint8: riding footpad brightness percent
+#define EEPROM_COLORS_ADDR     2  // 51 bytes: 17 groups x 3 (RGB)
+#define EEPROM_THRESH_ADDR    53  // uint16: footpadThreshold x 100
+#define EEPROM_FULL_V_ADDR    55  // uint16: fullVoltage x 10
+#define EEPROM_LOW_V_ADDR     57  // uint16: lowVoltage x 10
+#define EEPROM_LED_STATE_ADDR 59  // uint8: startup LED state (0/1)
+#define EEPROM_FP_WIDTH_ADDR  60  // uint8: footpad knight rider blob width
+#define EEPROM_FP_DELAY_ADDR  61  // uint16: footpad knight rider step delay, big-endian
+#define EEPROM_FP_FADE_ADDR   63  // uint8: footpad knight rider tail fade
+#define EEPROM_LED_FORWARD_ADDR 64 // uint8: active forward LED count
+#define EEPROM_LED_REVERSE_ADDR 65 // uint8: active reverse LED count
+#define EEPROM_LED_FOOTPAD_ADDR 66 // uint8: active footpad LED count
+#define EEPROM_RIDING_FOOTPAD_MODE_ADDR 67 // uint8: low nibble riding mode, high nibble idle mode
+#define EEPROM_IDLE_BRIGHTNESS_ADDR 68      // uint8: idle brightness percent
+#define EEPROM_RIDING_BRIGHTNESS_ADDR 69    // uint8: riding brightness percent
+#define EEPROM_STATUS_BRIGHTNESS_ADDR 70    // uint8: riding footpad brightness percent
+#define EEPROM_CURRENT_MIN_ADDR 71           // int16: current draw minimum, amps
+#define EEPROM_CURRENT_MAX_ADDR 73           // int16: current draw maximum, amps
+#define EEPROM_ROLL_MAX_ADDR 75              // uint8: symmetric roll angle maximum, degrees
+#define EEPROM_FET_TEMP_MIN_ADDR 76          // int16: FET temp minimum, C
+#define EEPROM_FET_TEMP_MAX_ADDR 78          // int16: FET temp maximum, C
+#define EEPROM_MOTOR_TEMP_MIN_ADDR 80        // int16: motor temp minimum, C
+#define EEPROM_MOTOR_TEMP_MAX_ADDR 82        // int16: motor temp maximum, C
+#define EEPROM_DUTY_MID_ADDR 84              // uint8: duty mid threshold percent
+#define EEPROM_DUTY_HIGH_ADDR 85             // uint8: duty high threshold percent
+#define EEPROM_ADC_SWAP_ADDR  86             // uint8: swap footpad ADC sides
 
 class LencoLED {
 public:
@@ -55,12 +81,21 @@ public:
         RIDING_FOOTPAD_DUTY = 0,
         RIDING_FOOTPAD_BATTERY = 1,
         RIDING_FOOTPAD_NONE = 2,
-        RIDING_FOOTPAD_KNIGHTRIDER = 3
+        RIDING_FOOTPAD_KNIGHTRIDER = 3,
+        RIDING_FOOTPAD_CURRENT = 4,
+        RIDING_FOOTPAD_ROLL = 5,
+        RIDING_FOOTPAD_FET_TEMP = 6,
+        RIDING_FOOTPAD_MOTOR_TEMP = 7,
+        DEFAULT_IDLE_FOOTPAD_MODE = RIDING_FOOTPAD_KNIGHTRIDER,
+        LED_COLOR_COUNT = 17
     };
 
     bool    ledEnabled      = true;
     uint8_t startupLedState = 1;
     bool    refloat_active = false;
+    bool    refloat_disabled_by_config = false;
+    uint8_t refloat_short_response_count = 0;
+    unsigned long refloat_first_short_response_ms = 0;
     uint8_t refloat_brightness = 100;
     unsigned long last_poll_ms = 0;
     uint8_t refloat_state = REFLOAT_STATE_UNKNOWN;
@@ -70,8 +105,17 @@ public:
     float   lift_fade_scale = 1.0f;
     unsigned long last_lift_fade_ms = 0;
     float   refloat_erpm = 0.0f;
+    float   refloat_duty_cycle = 0.0f;
     float   refloat_voltage = 0.0f;
+    float   refloat_current_in = 0.0f;
     uint8_t refloat_footpad = FOOT_NONE;
+    float   refloat_adc1 = 0.0f;
+    float   refloat_adc2 = 0.0f;
+    float   refloat_roll = 0.0f;
+    float   refloat_fet_temp = 0.0f;
+    float   refloat_motor_temp = 0.0f;
+    float   refloat_battery_pct = 0.0f;
+    bool    refloat_battery_valid = false;
     bool    lights_on = true;
     uint8_t fpRidingWidth = DEFAULT_FP_RIDING_WIDTH;
     uint16_t fpAnimationDelay = DEFAULT_FP_ANIMATION_DELAY;
@@ -80,12 +124,23 @@ public:
     uint8_t numLedsReverse = DEFAULT_REVERSE_LED_COUNT;
     uint8_t numLedsFootpad = DEFAULT_FOOTPAD_LED_COUNT;
     uint8_t ridingFootpadMode = RIDING_FOOTPAD_DUTY;
+    uint8_t idleFootpadMode = DEFAULT_IDLE_FOOTPAD_MODE;
+    bool swapFootpadAdc = false;
+    int16_t currentMin = -50;
+    int16_t currentMax = 50;
+    uint8_t rollMax = 45;
+    int16_t fetTempMin = 0;
+    int16_t fetTempMax = 80;
+    int16_t motorTempMin = 0;
+    int16_t motorTempMax = 80;
+    uint8_t dutyMidThreshold = 70;
+    uint8_t dutyHighThreshold = 80;
     uint8_t idleBrightness = 30;
     uint8_t ridingBrightness = 100;
     uint8_t statusBrightness = 100;
     double  lowVoltage      = 58.9;
     double  fullVoltage     = 79.8;
-    uint8_t ledColors[12][3] = {
+    uint8_t ledColors[LED_COLOR_COUNT][3] = {
         {228, 158,   0},  // 0: Forward LEDs
         {255,   0,   0},  // 1: Reverse LEDs
         { 50, 205,  50},  // 2: Startup Animation
@@ -98,6 +153,11 @@ public:
         {  0, 255,   0},  // 9: Duty 0-70%
         {255,  80,   0},  // 10: Duty 70-80%
         {255,   0,   0},  // 11: Duty > 80%
+        {  0, 180, 255},  // 12: Current Draw
+        {  0, 255,   0},  // 13: Current Regen
+        {180,   0, 255},  // 14: Roll
+        {255, 120,   0},  // 15: FET Temp
+        {255,   0,  80},  // 16: Motor Temp
     };
 
     // Call from setup() after ESC is initialised
@@ -106,6 +166,7 @@ public:
         setDefaultFootpadSettings();
         setDefaultRidingFootpadMode();
         setDefaultBrightnessSettings();
+        setDefaultTelemetryRanges();
         uint16_t magic;
         EEPROM.get(EEPROM_MAGIC_ADDR, magic);
         if (magic != EEPROM_MAGIC) {
@@ -119,7 +180,28 @@ public:
 
     // Call from loop() when esc.lcmPollAvailable is true
     void handleLcmPoll(uint8_t* data, uint8_t len) {
-        if (len <= LCM_POLL_BRIGHTNESS_IDX) return;
+        if (len <= LCM_POLL_BRIGHTNESS_IDX) {
+            if (len >= 3 && data[1] == 101 && data[2] == 24) {
+                unsigned long now = millis();
+                bool wasActive = refloat_active;
+                if (refloat_short_response_count == 0) {
+                    refloat_first_short_response_ms = now;
+                }
+                if (refloat_short_response_count < 255) {
+                    refloat_short_response_count++;
+                }
+                uint8_t requiredResponses = wasActive ? REFLOAT_ACTIVE_DISABLE_SHORT_RESPONSES : REFLOAT_DISABLE_SHORT_RESPONSES;
+                unsigned long requiredGrace = wasActive ? 0 : REFLOAT_DISABLE_GRACE_MS;
+                if (refloat_short_response_count >= requiredResponses &&
+                    now - refloat_first_short_response_ms >= requiredGrace) {
+                    disableRefloatFromConfig();
+                }
+            }
+            return;
+        }
+        refloat_disabled_by_config = false;
+        refloat_short_response_count = 0;
+        refloat_first_short_response_ms = 0;
         refloat_active = true;
         uint8_t brightness = data[LCM_POLL_BRIGHTNESS_IDX];
         refloat_brightness = brightness > 100 ? 100 : brightness;
@@ -129,10 +211,31 @@ public:
         if (!isRunningCompatState(refloat_state)) {
             refloat_pitch_deg = data[LCM_POLL_DUTY_PITCH_IDX];
         }
-        refloat_erpm = decodeInt16Scaled(data[LCM_POLL_ERPM_IDX], data[LCM_POLL_ERPM_IDX + 1], 1.0f);
-        refloat_voltage = decodeInt16Scaled(data[LCM_POLL_VOLTAGE_IDX], data[LCM_POLL_VOLTAGE_IDX + 1], 10.0f);
         refloat_footpad = (data[LCM_POLL_STATE_IDX] >> 4) & 0x03;
         last_poll_ms = millis();
+    }
+
+    void handleRefloatAllData(uint8_t* data, uint8_t len) {
+        if (len <= ALLDATA_MOTOR_TEMP_IDX || data[1] != 101 || data[2] != 10) return;
+        if (refloat_disabled_by_config || !refloat_active) return;
+        last_poll_ms = millis();
+        refloat_state = data[ALLDATA_STATE_IDX] & 0x0F;
+        refloat_adc1 = data[ALLDATA_ADC1_IDX] / 50.0f;
+        refloat_adc2 = data[ALLDATA_ADC2_IDX] / 50.0f;
+        refloat_voltage = decodeInt16Scaled(data[ALLDATA_VOLTAGE_IDX], data[ALLDATA_VOLTAGE_IDX + 1], 10.0f);
+        refloat_erpm = int16_t((uint16_t(data[ALLDATA_ERPM_IDX]) << 8) | data[ALLDATA_ERPM_IDX + 1]);
+        refloat_current_in = decodeInt16Scaled(data[ALLDATA_CURRENT_IDX], data[ALLDATA_CURRENT_IDX + 1], 10.0f);
+        refloat_duty_cycle = constrain(abs(int(data[ALLDATA_DUTY_IDX]) - 128) / 100.0f, 0.0f, 1.0f);
+        refloat_roll = decodeInt16Scaled(data[ALLDATA_ROLL_IDX], data[ALLDATA_ROLL_IDX + 1], 10.0f);
+        refloat_fet_temp = data[ALLDATA_FET_TEMP_IDX] / 2.0f;
+        refloat_motor_temp = data[ALLDATA_MOTOR_TEMP_IDX] / 2.0f;
+    }
+
+    void handleRefloatBattery(uint8_t* data, uint8_t len) {
+        if (len < BATTERY_LEVEL_IDX + 4 || data[1] != 101 || data[2] != 29) return;
+        if (refloat_disabled_by_config || !refloat_active) return;
+        refloat_battery_pct = constrain(decodeFloat32Auto(data + BATTERY_LEVEL_IDX), 0.0f, 1.0f);
+        refloat_battery_valid = true;
     }
 
     void updateRefloatState() {
@@ -143,6 +246,22 @@ public:
 
     bool lightsOn() const {
         return lights_on;
+    }
+
+    bool refloatIntegrationEnabled() const {
+        return !refloat_disabled_by_config;
+    }
+
+    bool leftFootpadPressed(const ESC& esc) const {
+        float leftValue = refloat_active ? refloat_adc1 : esc.adc1;
+        float rightValue = refloat_active ? refloat_adc2 : esc.adc2;
+        return (swapFootpadAdc ? rightValue : leftValue) > esc.footpadThreshold;
+    }
+
+    bool rightFootpadPressed(const ESC& esc) const {
+        float leftValue = refloat_active ? refloat_adc1 : esc.adc1;
+        float rightValue = refloat_active ? refloat_adc2 : esc.adc2;
+        return (swapFootpadAdc ? leftValue : rightValue) > esc.footpadThreshold;
     }
 
     float idleBrightnessScale() const {
@@ -162,7 +281,7 @@ public:
         if (len < 1) return;
         switch (data[0]) {
             case 0x01: // CMD_SET_COLOR
-                if (len >= 5 && data[1] < 12) {
+                if (len >= 5 && data[1] < LED_COLOR_COUNT) {
                     ledColors[data[1]][0] = data[2];
                     ledColors[data[1]][1] = data[3];
                     ledColors[data[1]][2] = data[4];
@@ -232,10 +351,18 @@ public:
                     }
                 }
                 break;
-            case 114: // CMD_SET_RIDING_FOOTPAD_MODE
-                if (len >= 2 && validRidingFootpadMode(data[1])) {
-                    ridingFootpadMode = data[1];
-                    saveRidingFootpadMode();
+            case 114: // CMD_SET_FOOTPAD_MODES
+                if (len >= 2) {
+                    uint8_t ridingMode = data[1] & 0x0F;
+                    uint8_t idleMode = (data[1] >> 4) & 0x0F;
+                    if (validFootpadMode(ridingMode) && validFootpadMode(idleMode)) {
+                        ridingFootpadMode = ridingMode;
+                        idleFootpadMode = idleMode;
+                        if (len >= 3) {
+                            swapFootpadAdc = data[2] != 0;
+                        }
+                        saveFootpadModes();
+                    }
                 }
                 break;
             case 115: // CMD_SET_BRIGHTNESS_SETTINGS
@@ -246,6 +373,9 @@ public:
                     saveBrightnessSettings();
                 }
                 break;
+            case 116: // CMD_SET_TELEMETRY_RANGE
+                handleTelemetryRangeCommand(data, len);
+                break;
         }
     }
 
@@ -253,6 +383,33 @@ private:
     static float decodeInt16Scaled(uint8_t hi, uint8_t lo, float scale) {
         int16_t raw = (int16_t)((uint16_t(hi) << 8) | lo);
         return raw / scale;
+    }
+
+    void disableRefloatFromConfig() {
+        refloat_disabled_by_config = true;
+        refloat_active = false;
+        refloat_state = REFLOAT_STATE_UNKNOWN;
+        refloat_handtest = false;
+        refloat_battery_valid = false;
+        refloat_adc1 = 0.0f;
+        refloat_adc2 = 0.0f;
+        refloat_roll = 0.0f;
+        refloat_current_in = 0.0f;
+        refloat_fet_temp = 0.0f;
+        refloat_motor_temp = 0.0f;
+    }
+
+    static float decodeFloat32Auto(uint8_t* data) {
+        uint32_t raw = ((uint32_t)data[0] << 24) |
+                       ((uint32_t)data[1] << 16) |
+                       ((uint32_t)data[2] << 8) |
+                       (uint32_t)data[3];
+        union {
+            uint32_t u;
+            float f;
+        } value;
+        value.u = raw;
+        return value.f;
     }
 
     static bool isRunningCompatState(uint8_t state) {
@@ -310,8 +467,12 @@ private:
                validLedCount(footpadCount);
     }
 
-    static bool validRidingFootpadMode(uint8_t mode) {
-        return mode <= RIDING_FOOTPAD_KNIGHTRIDER;
+    static bool validFootpadMode(uint8_t mode) {
+        return mode <= RIDING_FOOTPAD_MOTOR_TEMP;
+    }
+
+    static uint8_t packFootpadModes(uint8_t ridingMode, uint8_t idleMode) {
+        return (idleMode << 4) | (ridingMode & 0x0F);
     }
 
     static bool validBrightness(uint8_t value) {
@@ -320,6 +481,64 @@ private:
 
     static bool validBrightnessSettings(uint8_t idle, uint8_t riding, uint8_t status) {
         return validBrightness(idle) && validBrightness(riding) && validBrightness(status);
+    }
+
+    static bool validCurrentRange(int16_t minValue, int16_t maxValue) {
+        return minValue >= -100 && maxValue <= 100 && minValue < maxValue;
+    }
+
+    static bool validTempRange(int16_t minValue, int16_t maxValue) {
+        return minValue >= 0 && maxValue <= 150 && minValue < maxValue;
+    }
+
+    static bool validRollMax(uint8_t maxValue) {
+        return maxValue >= 1 && maxValue <= 90;
+    }
+
+    static bool validDutyThresholds(uint8_t midValue, uint8_t highValue) {
+        return midValue <= 100 && highValue <= 100 && midValue < highValue;
+    }
+
+    void handleTelemetryRangeCommand(uint8_t* data, uint8_t len) {
+        if (len < 2) return;
+        uint8_t mode = data[1];
+        if (mode == RIDING_FOOTPAD_DUTY) {
+            if (len >= 4 && validDutyThresholds(data[2], data[3])) {
+                dutyMidThreshold = data[2];
+                dutyHighThreshold = data[3];
+                saveDutyThresholds();
+            }
+            return;
+        }
+
+        if (mode == RIDING_FOOTPAD_ROLL) {
+            if (len >= 3 && validRollMax(data[2])) {
+                rollMax = data[2];
+                saveTelemetryRanges();
+            }
+            return;
+        }
+
+        if (len < 4) return;
+        int16_t minValue = decodeTelemetryRangeValue(mode, data[2]);
+        int16_t maxValue = decodeTelemetryRangeValue(mode, data[3]);
+        if (mode == RIDING_FOOTPAD_CURRENT && validCurrentRange(minValue, maxValue)) {
+            currentMin = minValue;
+            currentMax = maxValue;
+            saveTelemetryRanges();
+        } else if (mode == RIDING_FOOTPAD_FET_TEMP && validTempRange(minValue, maxValue)) {
+            fetTempMin = minValue;
+            fetTempMax = maxValue;
+            saveTelemetryRanges();
+        } else if (mode == RIDING_FOOTPAD_MOTOR_TEMP && validTempRange(minValue, maxValue)) {
+            motorTempMin = minValue;
+            motorTempMax = maxValue;
+            saveTelemetryRanges();
+        }
+    }
+
+    static int16_t decodeTelemetryRangeValue(uint8_t mode, uint8_t value) {
+        return mode == RIDING_FOOTPAD_CURRENT ? int16_t(value) - 100 : value;
     }
 
     void setDefaultFootpadSettings() {
@@ -336,6 +555,7 @@ private:
 
     void setDefaultRidingFootpadMode() {
         ridingFootpadMode = RIDING_FOOTPAD_DUTY;
+        idleFootpadMode = DEFAULT_IDLE_FOOTPAD_MODE;
     }
 
     void setDefaultBrightnessSettings() {
@@ -344,8 +564,20 @@ private:
         statusBrightness = 100;
     }
 
+    void setDefaultTelemetryRanges() {
+        currentMin = -50;
+        currentMax = 50;
+        rollMax = 45;
+        fetTempMin = 0;
+        fetTempMax = 80;
+        motorTempMin = 0;
+        motorTempMax = 80;
+        dutyMidThreshold = 70;
+        dutyHighThreshold = 80;
+    }
+
     void loadFromEEPROM(ESC& esc) {
-        for (uint8_t i = 0; i < 12; i++) {
+        for (uint8_t i = 0; i < LED_COLOR_COUNT; i++) {
             ledColors[i][0] = EEPROM.read(EEPROM_COLORS_ADDR + i * 3);
             ledColors[i][1] = EEPROM.read(EEPROM_COLORS_ADDR + i * 3 + 1);
             ledColors[i][2] = EEPROM.read(EEPROM_COLORS_ADDR + i * 3 + 2);
@@ -376,10 +608,25 @@ private:
             saveFootpadSettings();
         }
 
-        ridingFootpadMode = EEPROM.read(EEPROM_RIDING_FOOTPAD_MODE_ADDR);
-        if (!validRidingFootpadMode(ridingFootpadMode)) {
+        uint8_t packedFootpadModes = EEPROM.read(EEPROM_RIDING_FOOTPAD_MODE_ADDR);
+        if (packedFootpadModes <= RIDING_FOOTPAD_MOTOR_TEMP) {
+            ridingFootpadMode = packedFootpadModes;
+            idleFootpadMode = DEFAULT_IDLE_FOOTPAD_MODE;
+            saveFootpadModes();
+        } else {
+            ridingFootpadMode = packedFootpadModes & 0x0F;
+            idleFootpadMode = (packedFootpadModes >> 4) & 0x0F;
+        }
+        if (!validFootpadMode(ridingFootpadMode) || !validFootpadMode(idleFootpadMode)) {
             setDefaultRidingFootpadMode();
-            saveRidingFootpadMode();
+            saveFootpadModes();
+        }
+        uint8_t storedAdcSwap = EEPROM.read(EEPROM_ADC_SWAP_ADDR);
+        if (storedAdcSwap <= 1) {
+            swapFootpadAdc = storedAdcSwap == 1;
+        } else {
+            swapFootpadAdc = false;
+            saveFootpadModes();
         }
 
         idleBrightness = EEPROM.read(EEPROM_IDLE_BRIGHTNESS_ADDR);
@@ -389,10 +636,28 @@ private:
             setDefaultBrightnessSettings();
             saveBrightnessSettings();
         }
+
+        EEPROM.get(EEPROM_CURRENT_MIN_ADDR, currentMin);
+        EEPROM.get(EEPROM_CURRENT_MAX_ADDR, currentMax);
+        rollMax = EEPROM.read(EEPROM_ROLL_MAX_ADDR);
+        EEPROM.get(EEPROM_FET_TEMP_MIN_ADDR, fetTempMin);
+        EEPROM.get(EEPROM_FET_TEMP_MAX_ADDR, fetTempMax);
+        EEPROM.get(EEPROM_MOTOR_TEMP_MIN_ADDR, motorTempMin);
+        EEPROM.get(EEPROM_MOTOR_TEMP_MAX_ADDR, motorTempMax);
+        dutyMidThreshold = EEPROM.read(EEPROM_DUTY_MID_ADDR);
+        dutyHighThreshold = EEPROM.read(EEPROM_DUTY_HIGH_ADDR);
+        if (!validCurrentRange(currentMin, currentMax) ||
+            !validRollMax(rollMax) ||
+            !validTempRange(fetTempMin, fetTempMax) ||
+            !validTempRange(motorTempMin, motorTempMax) ||
+            !validDutyThresholds(dutyMidThreshold, dutyHighThreshold)) {
+            setDefaultTelemetryRanges();
+            saveTelemetryRanges();
+        }
     }
 
     void saveAll(double footpadThreshold) {
-        for (uint8_t i = 0; i < 12; i++) {
+        for (uint8_t i = 0; i < LED_COLOR_COUNT; i++) {
             EEPROM.update(EEPROM_COLORS_ADDR + i * 3,     ledColors[i][0]);
             EEPROM.update(EEPROM_COLORS_ADDR + i * 3 + 1, ledColors[i][1]);
             EEPROM.update(EEPROM_COLORS_ADDR + i * 3 + 2, ledColors[i][2]);
@@ -401,8 +666,9 @@ private:
         EEPROM.update(EEPROM_LED_STATE_ADDR, startupLedState);
         saveLedCounts();
         saveFootpadSettings();
-        saveRidingFootpadMode();
+        saveFootpadModes();
         saveBrightnessSettings();
+        saveTelemetryRanges();
     }
 
     void saveColor(uint8_t id) {
@@ -433,13 +699,30 @@ private:
         EEPROM.update(EEPROM_FP_FADE_ADDR, fpFadeAmount);
     }
 
-    void saveRidingFootpadMode() {
-        EEPROM.update(EEPROM_RIDING_FOOTPAD_MODE_ADDR, ridingFootpadMode);
+    void saveFootpadModes() {
+        EEPROM.update(EEPROM_RIDING_FOOTPAD_MODE_ADDR, packFootpadModes(ridingFootpadMode, idleFootpadMode));
+        EEPROM.update(EEPROM_ADC_SWAP_ADDR, swapFootpadAdc ? 1 : 0);
     }
 
     void saveBrightnessSettings() {
         EEPROM.update(EEPROM_IDLE_BRIGHTNESS_ADDR, idleBrightness);
         EEPROM.update(EEPROM_RIDING_BRIGHTNESS_ADDR, ridingBrightness);
         EEPROM.update(EEPROM_STATUS_BRIGHTNESS_ADDR, statusBrightness);
+    }
+
+    void saveTelemetryRanges() {
+        EEPROM.put(EEPROM_CURRENT_MIN_ADDR, currentMin);
+        EEPROM.put(EEPROM_CURRENT_MAX_ADDR, currentMax);
+        EEPROM.update(EEPROM_ROLL_MAX_ADDR, rollMax);
+        EEPROM.put(EEPROM_FET_TEMP_MIN_ADDR, fetTempMin);
+        EEPROM.put(EEPROM_FET_TEMP_MAX_ADDR, fetTempMax);
+        EEPROM.put(EEPROM_MOTOR_TEMP_MIN_ADDR, motorTempMin);
+        EEPROM.put(EEPROM_MOTOR_TEMP_MAX_ADDR, motorTempMax);
+        saveDutyThresholds();
+    }
+
+    void saveDutyThresholds() {
+        EEPROM.update(EEPROM_DUTY_MID_ADDR, dutyMidThreshold);
+        EEPROM.update(EEPROM_DUTY_HIGH_ADDR, dutyHighThreshold);
     }
 };
