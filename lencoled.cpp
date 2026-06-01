@@ -1,5 +1,10 @@
 #include "esc.cpp"
 #include <EEPROM.h>
+#include <avr/pgmspace.h>
+#include <avr/wdt.h>
+
+const char LENCOLED_FIRMWARE_MARKER[] PROGMEM __attribute__((used)) = "LCOTA1";
+const char LENCOLED_FIRMWARE_VERSION[] PROGMEM __attribute__((used)) = "LencoLED Arduino v3.0";
 
 // CAN packet type used by VESC Express to send LencoLED config commands to this node
 #define CAN_PACKET_LENCOLED_CONFIG 240
@@ -67,6 +72,8 @@ static const uint8_t REFLOAT_ACTIVE_DISABLE_SHORT_RESPONSES = 2;
 #define EEPROM_DUTY_MID_ADDR 84              // uint8: duty mid threshold percent
 #define EEPROM_DUTY_HIGH_ADDR 85             // uint8: duty high threshold percent
 #define EEPROM_ADC_SWAP_ADDR  86             // uint8: swap footpad ADC sides
+#define EEPROM_OTA_REQUEST_ADDR 87           // uint8: 0xA5 requests bootloader OTA mode
+#define OTA_REQUEST_MAGIC      0xA5
 
 class LencoLED {
 public:
@@ -162,6 +169,9 @@ public:
 
     // Call from setup() after ESC is initialised
     void init(ESC& esc) {
+        volatile uint8_t markerGuard = pgm_read_byte(&LENCOLED_FIRMWARE_MARKER[0]);
+        markerGuard ^= pgm_read_byte(&LENCOLED_FIRMWARE_VERSION[0]);
+        (void)markerGuard;
         setDefaultLedCounts();
         setDefaultFootpadSettings();
         setDefaultRidingFootpadMode();
@@ -375,6 +385,11 @@ public:
                 break;
             case 116: // CMD_SET_TELEMETRY_RANGE
                 handleTelemetryRangeCommand(data, len);
+                break;
+            case 120: // CMD_ENTER_OTA_BOOTLOADER
+                EEPROM.update(EEPROM_OTA_REQUEST_ADDR, OTA_REQUEST_MAGIC);
+                wdt_enable(WDTO_15MS);
+                while (true) {}
                 break;
         }
     }
