@@ -58,6 +58,7 @@ unsigned long lastBrakeCheckMillis = 0;
 const unsigned long brakeCheckInterval = 50;
 unsigned long lastLEDUpdateMillis = 0;
 const unsigned long LED_UPDATE_INTERVAL = 16; // ~60 FPS
+const unsigned long STATE_TRANSITION_DEBOUNCE_MS = 150;
 
 // Battery percent variables
 unsigned long voltageAcquiredMS = 0;
@@ -81,6 +82,9 @@ bool fadeForwardReverse = false;
 bool fadeFootpad = false;
 unsigned long ledFadeStartMS = 0;
 bool wasMovingState = false;
+bool pendingMovingState = false;
+bool pendingMovingStateActive = false;
+unsigned long pendingMovingStateMS = 0;
 
 int currentBrightness = STARTUP_BRIGHTNESS;
 int targetBrightness = STARTUP_BRIGHTNESS;
@@ -109,6 +113,7 @@ void footpadHandtest();
 void footpadRainbow();
 void disabledFootpadIndicator();
 void scaleFootpadLeds(float scale);
+void staticStartupLEDs();
 void requestLEDFade(bool forwardReverse, bool footpad);
 void clearInactiveLEDs();
 
@@ -159,6 +164,9 @@ void loop() {
   if (esc.refloatAllDataAvailable) {
     lencoLED.handleRefloatAllData(esc.refloatAllData, esc.refloatAllDataLen);
     esc.refloatAllDataAvailable = false;
+    globalErpm = lencoLED.refloat_erpm;
+    globalVoltage = lencoLED.refloat_voltage;
+    globalDutyCycle = lencoLED.refloat_duty_cycle;
   }
   if (esc.refloatBatteryAvailable) {
     lencoLED.handleRefloatBattery(esc.refloatBatteryData, esc.refloatBatteryLen);
@@ -215,6 +223,10 @@ void loop() {
   // === Determine direction and state ===
   bool refloatDisabledState = false;
   bool refloatFlywheelState = false;
+  bool desiredStartupState = startupState;
+  bool desiredMovingState = movingState;
+  int desiredTargetBrightness = targetBrightness;
+  float motionErpm = lencoLED.refloat_active ? lencoLED.refloat_erpm : globalErpm;
 
   if (lencoLED.refloat_active && lencoLED.refloat_state != REFLOAT_STATE_UNKNOWN) {
     uint8_t refloatState = lencoLED.refloat_state;
@@ -222,51 +234,65 @@ void loop() {
     refloatFlywheelState = (refloatState == 5);
 
     if (refloatState >= 1 && refloatState <= 3) {
-      startupState = false;
-      movingState = true;
-      if (globalErpm > 200) {
+      desiredStartupState = false;
+      desiredMovingState = true;
+      if (motionErpm > 200) {
         direction = FORWARD;
-      } else if (globalErpm < -200) {
+      } else if (motionErpm < -200) {
         direction = REVERSE;
       }
-      targetBrightness = NORMAL_BRIGHTNESS;
+      desiredTargetBrightness = NORMAL_BRIGHTNESS;
     } else if (!refloatDisabledState) {
-      if (movingState && !startupState)
-      {
-        returningToStartup = true;
-      }
-      startupState = true;
-      movingState = false;
-      targetBrightness = STARTUP_BRIGHTNESS;
+      desiredStartupState = true;
+      desiredMovingState = false;
+      desiredTargetBrightness = STARTUP_BRIGHTNESS;
     } else {
-      if (movingState && !startupState)
-      {
-        returningToStartup = true;
-      }
-      startupState = false;
-      movingState = false;
-      targetBrightness = STARTUP_BRIGHTNESS;
+      desiredStartupState = false;
+      desiredMovingState = false;
+      desiredTargetBrightness = STARTUP_BRIGHTNESS;
     }
   } else {
-    if (globalErpm > 200) {
-      startupState = false;
-      movingState = true;
+    if (motionErpm > 200) {
+      desiredStartupState = false;
+      desiredMovingState = true;
       direction = FORWARD;
-      targetBrightness = NORMAL_BRIGHTNESS;
-    } else if (globalErpm < -200) {
-      startupState = false;
-      movingState = true;
+      desiredTargetBrightness = NORMAL_BRIGHTNESS;
+    } else if (motionErpm < -200) {
+      desiredStartupState = false;
+      desiredMovingState = true;
       direction = REVERSE;
-      targetBrightness = NORMAL_BRIGHTNESS;
+      desiredTargetBrightness = NORMAL_BRIGHTNESS;
     } else {
-      if (movingState && !startupState)
-      {
+      desiredStartupState = true;
+      desiredMovingState = false;
+      desiredTargetBrightness = STARTUP_BRIGHTNESS;
+    }
+  }
+
+  if (desiredMovingState != movingState) {
+    unsigned long now = millis();
+    if (!pendingMovingStateActive || pendingMovingState != desiredMovingState) {
+      pendingMovingState = desiredMovingState;
+      pendingMovingStateActive = true;
+      pendingMovingStateMS = now;
+    }
+    if (now - pendingMovingStateMS >= STATE_TRANSITION_DEBOUNCE_MS) {
+      if (movingState && !desiredMovingState && !startupState) {
         returningToStartup = true;
       }
-      startupState = true;
-      movingState = false;
-      targetBrightness = STARTUP_BRIGHTNESS;
+      if (movingState != desiredMovingState) {
+        isBraking = false;
+        previousErpm = globalErpm;
+      }
+      startupState = desiredStartupState;
+      movingState = desiredMovingState;
+      targetBrightness = desiredTargetBrightness;
+      pendingMovingStateActive = false;
     }
+  } else {
+    pendingMovingStateActive = false;
+    startupState = desiredStartupState;
+    targetBrightness = desiredTargetBrightness;
   }
 
   // === Detect state and direction transitions ===
@@ -326,9 +352,14 @@ void loop() {
   }
 
   // === Brake logic ===
-  if (!refloatDisabledState && !lencoLED.refloat_handtest && millis() - lastBrakeCheckMillis >= brakeCheckInterval) {
+  if (!refloatDisabledState && !lencoLED.refloat_handtest && movingState && !startupState &&
+      !ledFadeActive && abs((int)globalErpm) >= BRAKE_IDLE_THRESHOLD &&
+      millis() - lastBrakeCheckMillis >= brakeCheckInterval) {
     checkBraking();
     lastBrakeCheckMillis = millis();
+  } else if (!movingState || startupState || ledFadeActive || abs((int)globalErpm) < BRAKE_IDLE_THRESHOLD) {
+    isBraking = false;
+    previousErpm = globalErpm;
   }
 
   // === Throttled LED update ===
@@ -401,9 +432,7 @@ void knightRider(int red, int green, int blue, int ridingWidth) {
 
   const long IDLE_ERPM = 200;
   if (abs(globalErpm) < IDLE_ERPM) {
-    for (int i = 0; i < ledCount; i++) {
-      leds[i].fadeToBlackBy(40);
-    }
+    staticStartupLEDs();
     clearInactiveLEDs();
     FastLED.show();
     return;

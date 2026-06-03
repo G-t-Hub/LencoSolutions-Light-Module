@@ -106,6 +106,10 @@ public:
     uint8_t refloat_brightness = 100;
     unsigned long last_poll_ms = 0;
     uint8_t refloat_state = REFLOAT_STATE_UNKNOWN;
+    uint8_t refloat_lcm_state = REFLOAT_STATE_UNKNOWN;
+    uint8_t refloat_all_data_state = REFLOAT_STATE_UNKNOWN;
+    unsigned long last_all_data_ms = 0;
+    bool    refloat_all_data_valid = false;
     bool    refloat_handtest = false;
     uint8_t refloat_pitch_deg = 0;
     bool    board_lifted = false;
@@ -216,9 +220,12 @@ public:
         uint8_t brightness = data[LCM_POLL_BRIGHTNESS_IDX];
         refloat_brightness = brightness > 100 ? 100 : brightness;
         uint8_t stateByte = data[LCM_POLL_STATE_IDX];
-        refloat_state = stateByte & 0x0F;
+        refloat_lcm_state = stateByte & 0x0F;
+        if (!hasRecentAllData()) {
+            refloat_state = refloat_lcm_state;
+        }
         refloat_handtest = (stateByte & 0x80) != 0;
-        if (!isRunningCompatState(refloat_state)) {
+        if (!isRunningCompatState(refloat_lcm_state)) {
             refloat_pitch_deg = data[LCM_POLL_DUTY_PITCH_IDX];
         }
         refloat_footpad = (data[LCM_POLL_STATE_IDX] >> 4) & 0x03;
@@ -229,7 +236,10 @@ public:
         if (len <= ALLDATA_MOTOR_TEMP_IDX || data[1] != 101 || data[2] != 10) return;
         if (refloat_disabled_by_config || !refloat_active) return;
         last_poll_ms = millis();
-        refloat_state = data[ALLDATA_STATE_IDX] & 0x0F;
+        last_all_data_ms = last_poll_ms;
+        refloat_all_data_valid = true;
+        refloat_all_data_state = data[ALLDATA_STATE_IDX] & 0x0F;
+        refloat_state = refloat_all_data_state;
         refloat_adc1 = data[ALLDATA_ADC1_IDX] / 50.0f;
         refloat_adc2 = data[ALLDATA_ADC2_IDX] / 50.0f;
         refloat_voltage = decodeInt16Scaled(data[ALLDATA_VOLTAGE_IDX], data[ALLDATA_VOLTAGE_IDX + 1], 10.0f);
@@ -404,6 +414,10 @@ private:
         refloat_disabled_by_config = true;
         refloat_active = false;
         refloat_state = REFLOAT_STATE_UNKNOWN;
+        refloat_lcm_state = REFLOAT_STATE_UNKNOWN;
+        refloat_all_data_state = REFLOAT_STATE_UNKNOWN;
+        refloat_all_data_valid = false;
+        last_all_data_ms = 0;
         refloat_handtest = false;
         refloat_battery_valid = false;
         refloat_adc1 = 0.0f;
@@ -430,6 +444,10 @@ private:
     static bool isRunningCompatState(uint8_t state) {
         // Refloat internal STATE_RUNNING maps to compat states 1..5; byte[5] is duty there.
         return state >= 1 && state <= 5;
+    }
+
+    bool hasRecentAllData() const {
+        return refloat_all_data_valid && (millis() - last_all_data_ms <= REFLOAT_POLL_TIMEOUT_MS);
     }
 
     void updateLiftState() {
