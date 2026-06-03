@@ -10,6 +10,7 @@
 typedef enum {
   CAN_PACKET_PROCESS_SHORT_BUFFER = 8,
   CAN_PACKET_FILL_RX_BUFFER = 5,
+  CAN_PACKET_FILL_RX_BUFFER_LONG = 6,
   CAN_PACKET_PROCESS_RX_BUFFER = 7,
   CAN_PACKET_STATUS_6 = 58  // ADC values broadcast
 } CAN_PACKET_ID;
@@ -55,6 +56,10 @@ class ESC {
     bool refloatBatteryAvailable = false;
     uint8_t refloatBatteryData[8];
     uint8_t refloatBatteryLen = 0;
+
+    bool refloatRealtimeAvailable = false;
+    uint8_t refloatRealtimeData[50];
+    uint8_t refloatRealtimeLen = 0;
 
     ESC() : mcp2515(10) {} // CS pin for MCP2515
 
@@ -102,6 +107,19 @@ class ESC {
       mcp2515.sendMessage(&msg);
     }
 
+    void sendRefloatRealtimeRequest(uint32_t mask1) {
+      uint8_t data[8];
+      data[0] = 36;   // COMM_CUSTOM_APP_DATA
+      data[1] = 101;  // Refloat package ID
+      data[2] = 33;   // COMMAND_REALTIME_DATA
+      data[3] = 0;    // float16 values
+      data[4] = (uint8_t)(mask1 >> 24);
+      data[5] = (uint8_t)(mask1 >> 16);
+      data[6] = (uint8_t)(mask1 >> 8);
+      data[7] = (uint8_t)(mask1 & 0xFF);
+      sendCanBuffer(data, sizeof(data), 0);
+    }
+
     // Called periodically (e.g. every 100ms)
     bool getRealtimeData() {
       sendRealtimeRequest();
@@ -145,6 +163,11 @@ class ESC {
             memcpy(refloatBatteryData, rxData, copyLen);
             refloatBatteryLen = copyLen;
             refloatBatteryAvailable = true;
+          } else if (rxLen >= 17 && rxData[0] == 36 && rxData[1] == 101 && rxData[2] == 33) {
+            uint8_t copyLen = min(rxLen, (uint8_t)sizeof(refloatRealtimeData));
+            memcpy(refloatRealtimeData, rxData, copyLen);
+            refloatRealtimeLen = copyLen;
+            refloatRealtimeAvailable = true;
           }
           rxLen = 0;
         }
@@ -214,6 +237,11 @@ class ESC {
               memcpy(refloatBatteryData, rxData, copyLen);
               refloatBatteryLen = copyLen;
               refloatBatteryAvailable = true;
+            } else if (rxLen >= 17 && rxData[0] == 36 && rxData[1] == 101 && rxData[2] == 33) {
+              uint8_t copyLen = min(rxLen, (uint8_t)sizeof(refloatRealtimeData));
+              memcpy(refloatRealtimeData, rxData, copyLen);
+              refloatRealtimeLen = copyLen;
+              refloatRealtimeAvailable = true;
             }
             rxLen = 0;
           } else if (id == NODE_CAN_ID) {
@@ -238,6 +266,56 @@ class ESC {
       erpm      = ((int32_t(rxData[11]) << 24) | (int32_t(rxData[12]) << 16) |
                    (int32_t(rxData[13]) << 8)  | (int32_t(rxData[14])));
       voltage   = ((int16_t(rxData[15]) << 8) | int16_t(rxData[16])) / 10.0;
+    }
+
+    void sendCanBuffer(const uint8_t* data, uint8_t len, uint8_t sendMode) {
+      struct can_frame msg;
+      uint8_t tx[8];
+
+      if (len <= 6) {
+        msg.can_id = (uint32_t(0x8000) << 16) | (uint16_t(CAN_PACKET_PROCESS_SHORT_BUFFER) << 8) | ESC_CAN_ID;
+        msg.can_dlc = len + 2;
+        msg.data[0] = NODE_CAN_ID;
+        msg.data[1] = sendMode;
+        memcpy(&msg.data[2], data, len);
+        mcp2515.sendMessage(&msg);
+        return;
+      }
+
+      uint8_t endA = 0;
+      for (uint8_t offset = 0; offset < len; offset += 7) {
+        endA = offset + 7;
+        uint8_t sendLen = min((uint8_t)7, (uint8_t)(len - offset));
+        msg.can_id = (uint32_t(0x8000) << 16) | (uint16_t(CAN_PACKET_FILL_RX_BUFFER) << 8) | ESC_CAN_ID;
+        msg.can_dlc = sendLen + 1;
+        msg.data[0] = offset;
+        memcpy(&msg.data[1], &data[offset], sendLen);
+        mcp2515.sendMessage(&msg);
+      }
+
+      uint16_t crc = crc16(data, len);
+      msg.can_id = (uint32_t(0x8000) << 16) | (uint16_t(CAN_PACKET_PROCESS_RX_BUFFER) << 8) | ESC_CAN_ID;
+      msg.can_dlc = 6;
+      tx[0] = NODE_CAN_ID;
+      tx[1] = sendMode;
+      tx[2] = 0;
+      tx[3] = len;
+      tx[4] = (uint8_t)(crc >> 8);
+      tx[5] = (uint8_t)(crc & 0xFF);
+      memcpy(msg.data, tx, msg.can_dlc);
+      mcp2515.sendMessage(&msg);
+      (void)endA;
+    }
+
+    static uint16_t crc16(const uint8_t* data, uint8_t len) {
+      uint16_t crc = 0;
+      for (uint8_t i = 0; i < len; i++) {
+        crc ^= (uint16_t)data[i] << 8;
+        for (uint8_t bit = 0; bit < 8; bit++) {
+          crc = (crc & 0x8000) ? (uint16_t)((crc << 1) ^ 0x1021) : (uint16_t)(crc << 1);
+        }
+      }
+      return crc;
     }
 
     // Parse STATUS_6 (periodic ADC broadcast)

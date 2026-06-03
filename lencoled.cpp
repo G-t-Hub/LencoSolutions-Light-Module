@@ -4,44 +4,10 @@
 #include <avr/wdt.h>
 
 const char LENCOLED_FIRMWARE_MARKER[] PROGMEM __attribute__((used)) = "LCOTA1";
-const char LENCOLED_FIRMWARE_VERSION[] PROGMEM __attribute__((used)) = "LencoLED Arduino v3.0";
+const char LENCOLED_FIRMWARE_VERSION[] PROGMEM __attribute__((used)) = "LencoLED Arduino v3.4";
 
 // CAN packet type used by VESC Express to send LencoLED config commands to this node
 #define CAN_PACKET_LENCOLED_CONFIG 240
-
-// Refloat LCM poll response layout (indices into lcmPollData[])
-// [0]=COMM_CUSTOM_APP_DATA(36), [1]=pkg(101), [2]=cmd(24),
-// [3]=state, [4]=fault, [5]=duty/pitch, [6-7]=erpm, [8-9]=current,
-// [10-11]=voltage, [12]=brightness, [13]=brightness_idle, [14]=status_brightness
-#define LCM_POLL_STATE_IDX 3
-#define LCM_POLL_DUTY_PITCH_IDX 5
-#define LCM_POLL_ERPM_IDX 6
-#define LCM_POLL_CURRENT_IDX 8
-#define LCM_POLL_VOLTAGE_IDX 10
-#define LCM_POLL_BRIGHTNESS_IDX 12
-#define ALLDATA_STATE_IDX 10
-#define ALLDATA_FOOTPAD_IDX 11
-#define ALLDATA_ADC1_IDX 12
-#define ALLDATA_ADC2_IDX 13
-#define ALLDATA_VOLTAGE_IDX 23
-#define ALLDATA_ERPM_IDX 25
-#define ALLDATA_CURRENT_IDX 31
-#define ALLDATA_DUTY_IDX 33
-#define ALLDATA_ROLL_IDX 8
-#define ALLDATA_FET_TEMP_IDX 39
-#define ALLDATA_MOTOR_TEMP_IDX 40
-#define BATTERY_LEVEL_IDX 3
-
-static const uint8_t FOOT_NONE = 0;
-static const uint8_t FOOT_LEFT = 1;
-static const uint8_t FOOT_RIGHT = 2;
-static const uint8_t FOOT_BOTH = 3;
-static const uint8_t REFLOAT_STATE_UNKNOWN = 0xFF;
-static const unsigned long REFLOAT_POLL_TIMEOUT_MS = 2000;
-static const unsigned long LIFT_FADE_TIME_MS = 500;
-static const unsigned long REFLOAT_DISABLE_GRACE_MS = 5000;
-static const uint8_t REFLOAT_DISABLE_SHORT_RESPONSES = 6;
-static const uint8_t REFLOAT_ACTIVE_DISABLE_SHORT_RESPONSES = 2;
 
 // EEPROM layout (86 bytes total)
 #define EEPROM_SIZE            87
@@ -93,41 +59,13 @@ public:
         RIDING_FOOTPAD_ROLL = 5,
         RIDING_FOOTPAD_FET_TEMP = 6,
         RIDING_FOOTPAD_MOTOR_TEMP = 7,
+        RIDING_FOOTPAD_SPEED = 8,
         DEFAULT_IDLE_FOOTPAD_MODE = RIDING_FOOTPAD_KNIGHTRIDER,
         LED_COLOR_COUNT = 17
     };
 
     bool    ledEnabled      = true;
     uint8_t startupLedState = 1;
-    bool    refloat_active = false;
-    bool    refloat_disabled_by_config = false;
-    uint8_t refloat_short_response_count = 0;
-    unsigned long refloat_first_short_response_ms = 0;
-    uint8_t refloat_brightness = 100;
-    unsigned long last_poll_ms = 0;
-    uint8_t refloat_state = REFLOAT_STATE_UNKNOWN;
-    uint8_t refloat_lcm_state = REFLOAT_STATE_UNKNOWN;
-    uint8_t refloat_all_data_state = REFLOAT_STATE_UNKNOWN;
-    unsigned long last_all_data_ms = 0;
-    bool    refloat_all_data_valid = false;
-    bool    refloat_handtest = false;
-    uint8_t refloat_pitch_deg = 0;
-    bool    board_lifted = false;
-    float   lift_fade_scale = 1.0f;
-    unsigned long last_lift_fade_ms = 0;
-    float   refloat_erpm = 0.0f;
-    float   refloat_duty_cycle = 0.0f;
-    float   refloat_voltage = 0.0f;
-    float   refloat_current_in = 0.0f;
-    uint8_t refloat_footpad = FOOT_NONE;
-    float   refloat_adc1 = 0.0f;
-    float   refloat_adc2 = 0.0f;
-    float   refloat_roll = 0.0f;
-    float   refloat_fet_temp = 0.0f;
-    float   refloat_motor_temp = 0.0f;
-    float   refloat_battery_pct = 0.0f;
-    bool    refloat_battery_valid = false;
-    bool    lights_on = true;
     uint8_t fpRidingWidth = DEFAULT_FP_RIDING_WIDTH;
     uint16_t fpAnimationDelay = DEFAULT_FP_ANIMATION_DELAY;
     uint8_t fpFadeAmount = DEFAULT_FP_FADE_AMOUNT;
@@ -190,110 +128,6 @@ public:
         } else {
             loadFromEEPROM(esc);
         }
-    }
-
-    // Call from loop() when esc.lcmPollAvailable is true
-    void handleLcmPoll(uint8_t* data, uint8_t len) {
-        if (len <= LCM_POLL_BRIGHTNESS_IDX) {
-            if (len >= 3 && data[1] == 101 && data[2] == 24) {
-                unsigned long now = millis();
-                bool wasActive = refloat_active;
-                if (refloat_short_response_count == 0) {
-                    refloat_first_short_response_ms = now;
-                }
-                if (refloat_short_response_count < 255) {
-                    refloat_short_response_count++;
-                }
-                uint8_t requiredResponses = wasActive ? REFLOAT_ACTIVE_DISABLE_SHORT_RESPONSES : REFLOAT_DISABLE_SHORT_RESPONSES;
-                unsigned long requiredGrace = wasActive ? 0 : REFLOAT_DISABLE_GRACE_MS;
-                if (refloat_short_response_count >= requiredResponses &&
-                    now - refloat_first_short_response_ms >= requiredGrace) {
-                    disableRefloatFromConfig();
-                }
-            }
-            return;
-        }
-        refloat_disabled_by_config = false;
-        refloat_short_response_count = 0;
-        refloat_first_short_response_ms = 0;
-        refloat_active = true;
-        uint8_t brightness = data[LCM_POLL_BRIGHTNESS_IDX];
-        refloat_brightness = brightness > 100 ? 100 : brightness;
-        uint8_t stateByte = data[LCM_POLL_STATE_IDX];
-        refloat_lcm_state = stateByte & 0x0F;
-        if (!hasRecentAllData()) {
-            refloat_state = refloat_lcm_state;
-        }
-        refloat_handtest = (stateByte & 0x80) != 0;
-        if (!isRunningCompatState(refloat_lcm_state)) {
-            refloat_pitch_deg = data[LCM_POLL_DUTY_PITCH_IDX];
-        }
-        refloat_footpad = (data[LCM_POLL_STATE_IDX] >> 4) & 0x03;
-        last_poll_ms = millis();
-    }
-
-    void handleRefloatAllData(uint8_t* data, uint8_t len) {
-        if (len <= ALLDATA_MOTOR_TEMP_IDX || data[1] != 101 || data[2] != 10) return;
-        if (refloat_disabled_by_config || !refloat_active) return;
-        last_poll_ms = millis();
-        last_all_data_ms = last_poll_ms;
-        refloat_all_data_valid = true;
-        refloat_all_data_state = data[ALLDATA_STATE_IDX] & 0x0F;
-        refloat_state = refloat_all_data_state;
-        refloat_adc1 = data[ALLDATA_ADC1_IDX] / 50.0f;
-        refloat_adc2 = data[ALLDATA_ADC2_IDX] / 50.0f;
-        refloat_voltage = decodeInt16Scaled(data[ALLDATA_VOLTAGE_IDX], data[ALLDATA_VOLTAGE_IDX + 1], 10.0f);
-        refloat_erpm = int16_t((uint16_t(data[ALLDATA_ERPM_IDX]) << 8) | data[ALLDATA_ERPM_IDX + 1]);
-        refloat_current_in = decodeInt16Scaled(data[ALLDATA_CURRENT_IDX], data[ALLDATA_CURRENT_IDX + 1], 10.0f);
-        refloat_duty_cycle = constrain(abs(int(data[ALLDATA_DUTY_IDX]) - 128) / 100.0f, 0.0f, 1.0f);
-        refloat_roll = decodeInt16Scaled(data[ALLDATA_ROLL_IDX], data[ALLDATA_ROLL_IDX + 1], 10.0f);
-        refloat_fet_temp = data[ALLDATA_FET_TEMP_IDX] / 2.0f;
-        refloat_motor_temp = data[ALLDATA_MOTOR_TEMP_IDX] / 2.0f;
-    }
-
-    void handleRefloatBattery(uint8_t* data, uint8_t len) {
-        if (len < BATTERY_LEVEL_IDX + 4 || data[1] != 101 || data[2] != 29) return;
-        if (refloat_disabled_by_config || !refloat_active) return;
-        refloat_battery_pct = constrain(decodeFloat32Auto(data + BATTERY_LEVEL_IDX), 0.0f, 1.0f);
-        refloat_battery_valid = true;
-    }
-
-    void updateRefloatState() {
-        updateLiftState();
-        updateLiftFade();
-        lights_on = ledEnabled && (!refloat_active || refloat_brightness > 0);
-    }
-
-    bool lightsOn() const {
-        return lights_on;
-    }
-
-    bool refloatIntegrationEnabled() const {
-        return !refloat_disabled_by_config;
-    }
-
-    bool leftFootpadPressed(const ESC& esc) const {
-        float leftValue = refloat_active ? refloat_adc1 : esc.adc1;
-        float rightValue = refloat_active ? refloat_adc2 : esc.adc2;
-        return (swapFootpadAdc ? rightValue : leftValue) > esc.footpadThreshold;
-    }
-
-    bool rightFootpadPressed(const ESC& esc) const {
-        float leftValue = refloat_active ? refloat_adc1 : esc.adc1;
-        float rightValue = refloat_active ? refloat_adc2 : esc.adc2;
-        return (swapFootpadAdc ? leftValue : rightValue) > esc.footpadThreshold;
-    }
-
-    float idleBrightnessScale() const {
-        return (idleBrightness / 100.0f) * lift_fade_scale;
-    }
-
-    float ridingBrightnessScale() const {
-        return ridingBrightness / 100.0f;
-    }
-
-    float statusBrightnessScale() const {
-        return statusBrightness / 100.0f;
     }
 
     // Call from loop() when esc.appFrameAvailable is true
@@ -405,80 +239,6 @@ public:
     }
 
 private:
-    static float decodeInt16Scaled(uint8_t hi, uint8_t lo, float scale) {
-        int16_t raw = (int16_t)((uint16_t(hi) << 8) | lo);
-        return raw / scale;
-    }
-
-    void disableRefloatFromConfig() {
-        refloat_disabled_by_config = true;
-        refloat_active = false;
-        refloat_state = REFLOAT_STATE_UNKNOWN;
-        refloat_lcm_state = REFLOAT_STATE_UNKNOWN;
-        refloat_all_data_state = REFLOAT_STATE_UNKNOWN;
-        refloat_all_data_valid = false;
-        last_all_data_ms = 0;
-        refloat_handtest = false;
-        refloat_battery_valid = false;
-        refloat_adc1 = 0.0f;
-        refloat_adc2 = 0.0f;
-        refloat_roll = 0.0f;
-        refloat_current_in = 0.0f;
-        refloat_fet_temp = 0.0f;
-        refloat_motor_temp = 0.0f;
-    }
-
-    static float decodeFloat32Auto(uint8_t* data) {
-        uint32_t raw = ((uint32_t)data[0] << 24) |
-                       ((uint32_t)data[1] << 16) |
-                       ((uint32_t)data[2] << 8) |
-                       (uint32_t)data[3];
-        union {
-            uint32_t u;
-            float f;
-        } value;
-        value.u = raw;
-        return value.f;
-    }
-
-    static bool isRunningCompatState(uint8_t state) {
-        // Refloat internal STATE_RUNNING maps to compat states 1..5; byte[5] is duty there.
-        return state >= 1 && state <= 5;
-    }
-
-    bool hasRecentAllData() const {
-        return refloat_all_data_valid && (millis() - last_all_data_ms <= REFLOAT_POLL_TIMEOUT_MS);
-    }
-
-    void updateLiftState() {
-        if (!refloat_active || refloat_state == REFLOAT_STATE_UNKNOWN || isRunningCompatState(refloat_state)) {
-            board_lifted = false;
-            return;
-        }
-
-        // If Refloat lights-off-when-lifted is disabled, pitch is 0 and this stays false.
-        if (refloat_pitch_deg > 60) {
-            board_lifted = true;
-        } else if (refloat_pitch_deg < 50) {
-            board_lifted = false;
-        }
-    }
-
-    void updateLiftFade() {
-        unsigned long now = millis();
-        if (last_lift_fade_ms == 0) {
-            last_lift_fade_ms = now;
-            return;
-        }
-
-        unsigned long delta = now - last_lift_fade_ms;
-        last_lift_fade_ms = now;
-
-        float step = delta / (float)LIFT_FADE_TIME_MS;
-        lift_fade_scale += board_lifted ? -step : step;
-        lift_fade_scale = constrain(lift_fade_scale, 0.0f, 1.0f);
-    }
-
     static uint16_t decodeEncodedDelay(uint8_t hiEncoded, uint8_t loEncoded) {
         if (hiEncoded == 0 || loEncoded == 0) return 0;
         return (uint16_t(uint8_t(hiEncoded - 1)) << 8) | uint8_t(loEncoded - 1);
@@ -501,7 +261,7 @@ private:
     }
 
     static bool validFootpadMode(uint8_t mode) {
-        return mode <= RIDING_FOOTPAD_MOTOR_TEMP;
+        return mode <= RIDING_FOOTPAD_SPEED;
     }
 
     static uint8_t packFootpadModes(uint8_t ridingMode, uint8_t idleMode) {
@@ -642,7 +402,7 @@ private:
         }
 
         uint8_t packedFootpadModes = EEPROM.read(EEPROM_RIDING_FOOTPAD_MODE_ADDR);
-        if (packedFootpadModes <= RIDING_FOOTPAD_MOTOR_TEMP) {
+        if (packedFootpadModes <= RIDING_FOOTPAD_SPEED) {
             ridingFootpadMode = packedFootpadModes;
             idleFootpadMode = DEFAULT_IDLE_FOOTPAD_MODE;
             saveFootpadModes();

@@ -7,6 +7,7 @@
 #include "balance_beeper.cpp"
 #include "esc.cpp"
 #include "lencoled.cpp"
+#include "refloatintegration.cpp"
 
 const uint8_t MAX_LEDS_PER_STRIP = LencoLED::MAX_LED_COUNT;
 
@@ -35,6 +36,7 @@ CRGB footpad_leds[MAX_LEDS_PER_STRIP];
 ESC esc;
 BalanceBeeper balanceBeeper;
 LencoLED lencoLED;
+RefloatIntegration refloat;
 
 // Global variables for ESC data
 float globalErpm = 0.0f;
@@ -102,6 +104,7 @@ bool footpadKnightRider();
 void footpadDutyCycleIndicator();
 void footpadCurrentIndicator();
 void footpadRollIndicator();
+void footpadSpeedIndicator();
 void footpadFetTempIndicator();
 void footpadMotorTempIndicator();
 void footpadTelemetryBar(float value, int16_t minValue, int16_t maxValue, uint8_t colorIndex);
@@ -158,24 +161,31 @@ void loop() {
     esc.appFrameAvailable = false;
   }
   if (esc.lcmPollAvailable) {
-    lencoLED.handleLcmPoll(esc.lcmPollData, esc.lcmPollLen);
+    refloat.handleLcmPoll(esc.lcmPollData, esc.lcmPollLen);
     esc.lcmPollAvailable = false;
   }
   if (esc.refloatAllDataAvailable) {
-    lencoLED.handleRefloatAllData(esc.refloatAllData, esc.refloatAllDataLen);
+    refloat.handleLegacyAllData(esc.refloatAllData, esc.refloatAllDataLen);
     esc.refloatAllDataAvailable = false;
-    globalErpm = lencoLED.refloat_erpm;
-    globalVoltage = lencoLED.refloat_voltage;
-    globalDutyCycle = lencoLED.refloat_duty_cycle;
+    globalErpm = refloat.erpm;
+    globalVoltage = refloat.voltage;
+    globalDutyCycle = refloat.dutyCycle;
+  }
+  if (esc.refloatRealtimeAvailable) {
+    refloat.handleRealtimeData(esc.refloatRealtimeData, esc.refloatRealtimeLen);
+    esc.refloatRealtimeAvailable = false;
+    globalErpm = refloat.erpm;
+    globalVoltage = refloat.voltage;
+    globalDutyCycle = refloat.dutyCycle;
   }
   if (esc.refloatBatteryAvailable) {
-    lencoLED.handleRefloatBattery(esc.refloatBatteryData, esc.refloatBatteryLen);
+    refloat.handleLegacyBattery(esc.refloatBatteryData, esc.refloatBatteryLen);
     esc.refloatBatteryAvailable = false;
   }
-  lencoLED.updateRefloatState();
+  refloat.update(lencoLED.ledEnabled);
 
   // === Periodic LCM poll (Refloat light control) ===
-  unsigned long lcmPollInterval = lencoLED.refloatIntegrationEnabled()
+  unsigned long lcmPollInterval = refloat.integrationEnabled()
       ? LCM_POLL_INTERVAL
       : REFLOAT_DISABLED_PROBE_INTERVAL;
   if (millis() - lastLcmPollTime >= lcmPollInterval) {
@@ -184,20 +194,21 @@ void loop() {
   }
 
   bool idleFootpadModeDisplayed = startupState && !movingState && startupAnimationComplete &&
-      lencoLED.lightsOn() && !(lencoLED.refloat_active && lencoLED.refloat_state == 5);
+      refloat.lightsOn() && !(refloat.active && refloat.state == 5);
 
-  if (lencoLED.refloat_active &&
-      lencoLED.refloatIntegrationEnabled() &&
+  if (refloat.active &&
+      refloat.integrationEnabled() &&
       millis() - lastRefloatAllDataPollTime >= REFLOAT_ALLDATA_POLL_INTERVAL) {
-    esc.sendRefloatAllDataRequest();
+    refloat.requestTelemetry(esc);
     lastRefloatAllDataPollTime = millis();
   }
 
-  if (lencoLED.refloat_active &&
+  if (refloat.active &&
+      refloat.needsLegacyBatteryRequest() &&
       (batteryDisplayActive ||
        (movingState && footpadModeUsesBattery(lencoLED.ridingFootpadMode)) ||
        (idleFootpadModeDisplayed && footpadModeUsesBattery(lencoLED.idleFootpadMode))) &&
-      lencoLED.refloatIntegrationEnabled() &&
+      refloat.integrationEnabled() &&
       millis() - lastRefloatBatteryPollTime >= REFLOAT_BATTERY_POLL_INTERVAL) {
     esc.sendRefloatBatteryRequest();
     lastRefloatBatteryPollTime = millis();
@@ -206,15 +217,15 @@ void loop() {
 
   // === Periodic CAN polling ===
   if (millis() - lastCanPollTime >= CAN_POLLING_INTERVAL) {
-    if (!lencoLED.refloat_active) {
+    if (!refloat.active) {
       esc.getRealtimeData();
     }
 
     lastCanPollTime = millis();
 
-    globalErpm = lencoLED.refloat_active ? lencoLED.refloat_erpm : esc.erpm;
-    globalVoltage = lencoLED.refloat_active ? lencoLED.refloat_voltage : esc.voltage;
-    globalDutyCycle = lencoLED.refloat_active ? lencoLED.refloat_duty_cycle : esc.dutyCycle;
+    globalErpm = refloat.active ? refloat.erpm : esc.erpm;
+    globalVoltage = refloat.active ? refloat.voltage : esc.voltage;
+    globalDutyCycle = refloat.active ? refloat.dutyCycle : esc.dutyCycle;
   }
 
   // === Use global data ===
@@ -226,10 +237,10 @@ void loop() {
   bool desiredStartupState = startupState;
   bool desiredMovingState = movingState;
   int desiredTargetBrightness = targetBrightness;
-  float motionErpm = lencoLED.refloat_active ? lencoLED.refloat_erpm : globalErpm;
+  float motionErpm = refloat.active ? refloat.erpm : globalErpm;
 
-  if (lencoLED.refloat_active && lencoLED.refloat_state != REFLOAT_STATE_UNKNOWN) {
-    uint8_t refloatState = lencoLED.refloat_state;
+  if (refloat.active && refloat.state != REFLOAT_STATE_UNKNOWN) {
+    uint8_t refloatState = refloat.state;
     refloatDisabledState = (refloatState == 15);
     refloatFlywheelState = (refloatState == 5);
 
@@ -310,7 +321,7 @@ void loop() {
     ledFadeActive = false;
   }
 
-  bool lightsOn = lencoLED.lightsOn();
+  bool lightsOn = refloat.lightsOn();
   if (refloatDisabledState) {
     fill_solid(forward_leds, lencoLED.numLedsForward, CRGB::Black);
     fill_solid(reverse_leds, lencoLED.numLedsReverse, CRGB::Black);
@@ -352,7 +363,7 @@ void loop() {
   }
 
   // === Brake logic ===
-  if (!refloatDisabledState && !lencoLED.refloat_handtest && movingState && !startupState &&
+  if (!refloatDisabledState && !refloat.handtest && movingState && !startupState &&
       !ledFadeActive && abs((int)globalErpm) >= BRAKE_IDLE_THRESHOLD &&
       millis() - lastBrakeCheckMillis >= brakeCheckInterval) {
     checkBraking();
@@ -370,7 +381,7 @@ void loop() {
     if (refloatDisabledState) {
       brightnessScale = 1.0f;
     } else if (lightsOn) {
-      brightnessScale = movingState ? lencoLED.ridingBrightnessScale() : lencoLED.idleBrightnessScale();
+      brightnessScale = movingState ? refloat.ridingBrightnessScale(lencoLED.ridingBrightness) : refloat.idleBrightnessScale(lencoLED.idleBrightness);
     }
     int scaledBrightness = constrain((int)(currentBrightness * brightnessScale), 0, 255);
     FastLED.setBrightness(scaledBrightness);
@@ -403,7 +414,7 @@ void checkBraking() {
 
   previousErpm = globalErpm;
 
-  if (!lencoLED.lightsOn()) return;
+  if (!refloat.lightsOn()) return;
 
   CRGB *leds_const = (direction == FORWARD) ? reverse_leds : forward_leds;
   int ledCount = (direction == FORWARD) ? lencoLED.numLedsReverse : lencoLED.numLedsForward;
@@ -487,12 +498,12 @@ void processStartupAction() {
   }
 
   // Animation complete — remaining footpad patterns only show when LEDs are enabled.
-  if (!lencoLED.lightsOn()) {
+  if (!refloat.lightsOn()) {
     fill_solid(footpad_leds, lencoLED.numLedsFootpad, CRGB::Black);
     return;
   }
 
-  if (lencoLED.refloat_handtest && !movingState) {
+  if (refloat.handtest && !movingState) {
     footpadHandtest();
     return;
   }
@@ -512,8 +523,8 @@ void processStartupAction() {
     voltageAcquiredMS = millis();
   }
 
-  bool leftFootpad = lencoLED.leftFootpadPressed(esc);
-  bool rightFootpad = lencoLED.rightFootpadPressed(esc);
+  bool leftFootpad = refloat.leftFootpadPressed(esc, lencoLED.swapFootpadAdc);
+  bool rightFootpad = refloat.rightFootpadPressed(esc, lencoLED.swapFootpadAdc);
   bool anyFootpad = leftFootpad || rightFootpad;
   if (leftFootpad && rightFootpad) {
     lastFootpadTriggerMillis = millis();
@@ -561,7 +572,7 @@ void startupAnimation() {
 }
 
 void staticStartupLEDs() {
-  if (!lencoLED.lightsOn()) return;
+  if (!refloat.lightsOn()) return;
   CRGB *frontLeds = (direction == FORWARD) ? forward_leds : reverse_leds;
   CRGB *rearLeds = (direction == FORWARD) ? reverse_leds : forward_leds;
   int frontCount = (direction == FORWARD) ? lencoLED.numLedsForward : lencoLED.numLedsReverse;
@@ -600,9 +611,9 @@ void warningLEDs() {
 
 void batteryPercentStartupLEDs() {
   double batteryVoltagePercentage = (globalVoltage - lencoLED.lowVoltage) / (lencoLED.fullVoltage - lencoLED.lowVoltage);
-  bool usingRefloatBattery = lencoLED.refloat_active && lencoLED.refloat_battery_valid;
+  bool usingRefloatBattery = refloat.active && refloat.batteryValid;
   if (usingRefloatBattery) {
-    batteryVoltagePercentage = lencoLED.refloat_battery_pct;
+    batteryVoltagePercentage = refloat.batteryPct;
   }
 
   if (!usingRefloatBattery && (batteryVoltagePercentage < -0.10 || batteryVoltagePercentage > 1.10)) {
@@ -633,8 +644,8 @@ void batteryPercentStartupLEDs() {
 
 void singleFootpadTriggeredStartupLEDs() {
   const int half = lencoLED.numLedsFootpad / 2;
-  bool leftFootpad = lencoLED.leftFootpadPressed(esc);
-  bool rightFootpad = lencoLED.rightFootpadPressed(esc);
+  bool leftFootpad = refloat.leftFootpadPressed(esc, lencoLED.swapFootpadAdc);
+  bool rightFootpad = refloat.rightFootpadPressed(esc, lencoLED.swapFootpadAdc);
 
   if (leftFootpad || rightFootpad) {
     for (int i = 0; i < lencoLED.numLedsFootpad; i++) {
@@ -701,7 +712,8 @@ bool footpadModeUsesAllData(uint8_t mode) {
   return mode == LencoLED::RIDING_FOOTPAD_CURRENT ||
          mode == LencoLED::RIDING_FOOTPAD_ROLL ||
          mode == LencoLED::RIDING_FOOTPAD_FET_TEMP ||
-         mode == LencoLED::RIDING_FOOTPAD_MOTOR_TEMP;
+         mode == LencoLED::RIDING_FOOTPAD_MOTOR_TEMP ||
+         mode == LencoLED::RIDING_FOOTPAD_SPEED;
 }
 
 bool footpadModeUsesBattery(uint8_t mode) {
@@ -709,7 +721,7 @@ bool footpadModeUsesBattery(uint8_t mode) {
 }
 
 void renderFootpadMode(uint8_t mode, bool applyStatusBrightness) {
-  if (footpadModeUsesAllData(mode) && !lencoLED.refloat_active) {
+  if (footpadModeUsesAllData(mode) && !refloat.active) {
     fill_solid(footpad_leds, lencoLED.numLedsFootpad, CRGB::Black);
     return;
   }
@@ -731,6 +743,9 @@ void renderFootpadMode(uint8_t mode, bool applyStatusBrightness) {
     case LencoLED::RIDING_FOOTPAD_ROLL:
       footpadRollIndicator();
       break;
+    case LencoLED::RIDING_FOOTPAD_SPEED:
+      footpadSpeedIndicator();
+      break;
     case LencoLED::RIDING_FOOTPAD_FET_TEMP:
       footpadFetTempIndicator();
       break;
@@ -744,7 +759,7 @@ void renderFootpadMode(uint8_t mode, bool applyStatusBrightness) {
   }
 
   if (updated && applyStatusBrightness && mode != LencoLED::RIDING_FOOTPAD_NONE) {
-    scaleFootpadLeds(lencoLED.statusBrightnessScale());
+    scaleFootpadLeds(refloat.statusBrightnessScale(lencoLED.statusBrightness));
   }
 }
 
@@ -775,14 +790,14 @@ void footpadCurrentIndicator() {
 
   if (lencoLED.currentMin < 0 && lencoLED.currentMax > 0) {
     int zeroIdx = constrain((int)((0 - lencoLED.currentMin) / (float)(lencoLED.currentMax - lencoLED.currentMin) * lencoLED.numLedsFootpad), 0, (int)lencoLED.numLedsFootpad - 1);
-    if (lencoLED.refloat_current_in >= 0) {
-      int ledsToLight = constrain((int)((lencoLED.refloat_current_in / lencoLED.currentMax) * (lencoLED.numLedsFootpad - zeroIdx)), 0, (int)lencoLED.numLedsFootpad - zeroIdx);
+    if (refloat.currentIn >= 0) {
+      int ledsToLight = constrain((int)((refloat.currentIn / lencoLED.currentMax) * (lencoLED.numLedsFootpad - zeroIdx)), 0, (int)lencoLED.numLedsFootpad - zeroIdx);
       for (int i = 0; i < ledsToLight; i++) {
         int idx = zeroIdx + i;
         footpad_leds[idx].setRGB(lencoLED.ledColors[12][0], lencoLED.ledColors[12][1], lencoLED.ledColors[12][2]);
       }
     } else {
-      int ledsToLight = constrain((int)((abs(lencoLED.refloat_current_in) / abs(lencoLED.currentMin)) * (zeroIdx + 1)), 0, zeroIdx + 1);
+      int ledsToLight = constrain((int)((abs(refloat.currentIn) / abs(lencoLED.currentMin)) * (zeroIdx + 1)), 0, zeroIdx + 1);
       for (int i = 0; i < ledsToLight; i++) {
         int idx = zeroIdx - i;
         footpad_leds[idx].setRGB(lencoLED.ledColors[13][0], lencoLED.ledColors[13][1], lencoLED.ledColors[13][2]);
@@ -791,7 +806,7 @@ void footpadCurrentIndicator() {
     return;
   }
 
-  footpadTelemetryBar(lencoLED.refloat_current_in, lencoLED.currentMin, lencoLED.currentMax, 12);
+  footpadTelemetryBar(refloat.currentIn, lencoLED.currentMin, lencoLED.currentMax, 12);
 }
 
 void footpadRollIndicator() {
@@ -800,10 +815,10 @@ void footpadRollIndicator() {
 
   int center = lencoLED.numLedsFootpad / 2;
   int sideLeds = lencoLED.numLedsFootpad / 2;
-  int ledsToLight = constrain((int)((abs(lencoLED.refloat_roll) / lencoLED.rollMax) * sideLeds), 0, sideLeds);
+  int ledsToLight = constrain((int)((abs(refloat.roll) / lencoLED.rollMax) * sideLeds), 0, sideLeds);
 
   for (int i = 0; i < ledsToLight; i++) {
-    int idx = lencoLED.refloat_roll > 0 ? center - 1 - i : center + i;
+    int idx = refloat.roll > 0 ? center - 1 - i : center + i;
     if (idx >= 0 && idx < lencoLED.numLedsFootpad) {
       footpad_leds[idx].setRGB(
         lencoLED.ledColors[14][0],
@@ -814,12 +829,27 @@ void footpadRollIndicator() {
   }
 }
 
+void footpadSpeedIndicator() {
+  fill_solid(footpad_leds, lencoLED.numLedsFootpad, CRGB::Black);
+  const float maxSpeedKmh = 40.0f;
+  float normalized = constrain(refloat.speedKmh / maxSpeedKmh, 0.0f, 1.0f);
+  int ledsToLight = constrain((int)(normalized * lencoLED.numLedsFootpad), 0, (int)lencoLED.numLedsFootpad);
+  uint8_t colorIndex = normalized < 0.5f ? 9 : (normalized < 0.8f ? 10 : 11);
+  for (int i = 0; i < ledsToLight; i++) {
+    footpad_leds[i].setRGB(
+      lencoLED.ledColors[colorIndex][0],
+      lencoLED.ledColors[colorIndex][1],
+      lencoLED.ledColors[colorIndex][2]
+    );
+  }
+}
+
 void footpadFetTempIndicator() {
-  footpadTelemetryBar(lencoLED.refloat_fet_temp, lencoLED.fetTempMin, lencoLED.fetTempMax, 15);
+  footpadTelemetryBar(refloat.fetTemp, lencoLED.fetTempMin, lencoLED.fetTempMax, 15);
 }
 
 void footpadMotorTempIndicator() {
-  footpadTelemetryBar(lencoLED.refloat_motor_temp, lencoLED.motorTempMin, lencoLED.motorTempMax, 16);
+  footpadTelemetryBar(refloat.motorTemp, lencoLED.motorTempMin, lencoLED.motorTempMax, 16);
 }
 
 void footpadHandtest() {
@@ -835,8 +865,8 @@ void footpadHandtest() {
     footpad_leds[i] = centerColor;
   }
 
-  bool leftTriggered = lencoLED.leftFootpadPressed(esc);
-  bool rightTriggered = lencoLED.rightFootpadPressed(esc);
+  bool leftTriggered = refloat.leftFootpadPressed(esc, lencoLED.swapFootpadAdc);
+  bool rightTriggered = refloat.rightFootpadPressed(esc, lencoLED.swapFootpadAdc);
 
   if (leftTriggered)
     footpad_leds[0].setRGB(lencoLED.ledColors[7][0], lencoLED.ledColors[7][1], lencoLED.ledColors[7][2]);
@@ -855,7 +885,7 @@ void footpadRainbow() {
     uint8_t hue = rainbowHue + (uint8_t)((uint16_t)i * 255 / lencoLED.numLedsFootpad);
     footpad_leds[i] = CHSV(hue, 255, 200);
   }
-  scaleFootpadLeds(lencoLED.statusBrightnessScale());
+  scaleFootpadLeds(refloat.statusBrightnessScale(lencoLED.statusBrightness));
 }
 
 void disabledFootpadIndicator() {
