@@ -28,6 +28,9 @@ const uint8_t MAX_LEDS_PER_STRIP = LencoLED::MAX_LED_COUNT;
 #define BRAKE_THRESHOLD 15
 #define BRAKE_ON_DEBOUNCE_COUNT 3
 #define BRAKE_OFF_DEBOUNCE_COUNT 3
+#define MOVING_ERPM_THRESHOLD 200
+#define DIRECTION_ERPM_THRESHOLD 20
+#define DIRECTION_FADE_DURATION_MS 250
 
 CRGB forward_leds[MAX_LEDS_PER_STRIP];
 CRGB reverse_leds[MAX_LEDS_PER_STRIP];
@@ -80,9 +83,9 @@ int previousDirection = FORWARD;
 int previousErpm = 0;
 
 bool ledFadeActive = false;
-bool fadeForwardReverse = false;
-bool fadeFootpad = false;
 unsigned long ledFadeStartMS = 0;
+int fadingDirection = FORWARD;
+bool directionStripClearPending = false;
 bool wasMovingState = false;
 bool pendingMovingState = false;
 bool pendingMovingStateActive = false;
@@ -117,7 +120,10 @@ void footpadRainbow();
 void disabledFootpadIndicator();
 void scaleFootpadLeds(float scale);
 void staticStartupLEDs();
-void requestLEDFade(bool forwardReverse, bool footpad);
+void requestDirectionFade(int oldDirection);
+void applyDirectionFade();
+void clearActiveRideStrip();
+void renderRearLights();
 void clearInactiveLEDs();
 
 void setup() {
@@ -247,9 +253,9 @@ void loop() {
     if (refloatState >= 1 && refloatState <= 3) {
       desiredStartupState = false;
       desiredMovingState = true;
-      if (motionErpm > 200) {
+      if (motionErpm > DIRECTION_ERPM_THRESHOLD) {
         direction = FORWARD;
-      } else if (motionErpm < -200) {
+      } else if (motionErpm < -DIRECTION_ERPM_THRESHOLD) {
         direction = REVERSE;
       }
       desiredTargetBrightness = NORMAL_BRIGHTNESS;
@@ -263,12 +269,12 @@ void loop() {
       desiredTargetBrightness = STARTUP_BRIGHTNESS;
     }
   } else {
-    if (motionErpm > 200) {
+    if (motionErpm > MOVING_ERPM_THRESHOLD) {
       desiredStartupState = false;
       desiredMovingState = true;
       direction = FORWARD;
       desiredTargetBrightness = NORMAL_BRIGHTNESS;
-    } else if (motionErpm < -200) {
+    } else if (motionErpm < -MOVING_ERPM_THRESHOLD) {
       desiredStartupState = false;
       desiredMovingState = true;
       direction = REVERSE;
@@ -307,17 +313,15 @@ void loop() {
   }
 
   // === Detect state and direction transitions ===
-  if (movingState != wasMovingState) requestLEDFade(true, true);
   wasMovingState = movingState;
 
   if (direction != previousDirection) {
-    requestLEDFade(true, false);
+    requestDirectionFade(previousDirection);
     previousDirection = direction;
   }
 
   // === LED patterns ===
-  // Expire transition fade regardless of LED toggle state.
-  if (ledFadeActive && millis() - ledFadeStartMS >= 250) {
+  if (ledFadeActive && millis() - ledFadeStartMS >= DIRECTION_FADE_DURATION_MS) {
     ledFadeActive = false;
   }
 
@@ -332,43 +336,34 @@ void loop() {
       fill_solid(reverse_leds, lencoLED.numLedsReverse, CRGB::Black);
     }
 
-    if (lightsOn && ledFadeActive) {
-      if (fadeForwardReverse) {
-        for (int i = 0; i < lencoLED.numLedsForward; i++) {
-          forward_leds[i].fadeToBlackBy(60);
-        }
-        for (int i = 0; i < lencoLED.numLedsReverse; i++) {
-          reverse_leds[i].fadeToBlackBy(60);
-        }
-      }
-      if (fadeFootpad) {
-        for (int i = 0; i < lencoLED.numLedsFootpad; i++) {
-          footpad_leds[i].fadeToBlackBy(60);
-        }
-      }
-    } else if (lightsOn && refloatFlywheelState && !ledFadeActive) {
+    if (lightsOn && refloatFlywheelState) {
       staticStartupLEDs();
       footpadRainbow();
-    } else if (!ledFadeActive && startupState) {
+    } else if (startupState) {
       processStartupAction();
-    } else if (!ledFadeActive && movingState) {
+    } else if (movingState) {
       if (lightsOn) {
         int rideLedCount = (direction == FORWARD) ? lencoLED.numLedsForward : lencoLED.numLedsReverse;
+        clearActiveRideStrip();
         knightRider(lencoLED.ledColors[0][0], lencoLED.ledColors[0][1], lencoLED.ledColors[0][2], max(1, rideLedCount / 3));
+        applyDirectionFade();
+        renderRearLights();
         renderRidingFootpad();
       } else {
         fill_solid(footpad_leds, lencoLED.numLedsFootpad, CRGB::Black);
       }
+    } else if (lightsOn) {
+      applyDirectionFade();
     }
   }
 
   // === Brake logic ===
   if (!refloatDisabledState && !refloat.handtest && movingState && !startupState &&
-      !ledFadeActive && abs((int)globalErpm) >= BRAKE_IDLE_THRESHOLD &&
+      abs((int)globalErpm) >= BRAKE_IDLE_THRESHOLD &&
       millis() - lastBrakeCheckMillis >= brakeCheckInterval) {
     checkBraking();
     lastBrakeCheckMillis = millis();
-  } else if (!movingState || startupState || ledFadeActive || abs((int)globalErpm) < BRAKE_IDLE_THRESHOLD) {
+  } else if (!movingState || startupState || abs((int)globalErpm) < BRAKE_IDLE_THRESHOLD) {
     isBraking = false;
     previousErpm = globalErpm;
   }
@@ -413,7 +408,9 @@ void checkBraking() {
   }
 
   previousErpm = globalErpm;
+}
 
+void renderRearLights() {
   if (!refloat.lightsOn()) return;
 
   CRGB *leds_const = (direction == FORWARD) ? reverse_leds : forward_leds;
@@ -442,14 +439,7 @@ void knightRider(int red, int green, int blue, int ridingWidth) {
   int travel = max(0, ledCount - ridingWidth);
 
   const long IDLE_ERPM = 200;
-  if (abs(globalErpm) < IDLE_ERPM) {
-    staticStartupLEDs();
-    clearInactiveLEDs();
-    FastLED.show();
-    return;
-  }
-
-  long erpm = abs(globalErpm);
+  long erpm = max((long)abs(globalErpm), IDLE_ERPM);
   unsigned long delayDuration = (unsigned long)map(erpm, 200, 20000, 80, 5);
   delayDuration = constrain(delayDuration, 5UL, 250UL);
 
@@ -478,8 +468,6 @@ void knightRider(int red, int green, int blue, int ridingWidth) {
     if (pos >= travel) animDir = -1;
     else if (pos <= 0)  animDir =  1;
 
-    clearInactiveLEDs();
-    FastLED.show();
     lastKnightRiderUpdate = millis();
   }
 }
@@ -595,11 +583,38 @@ void lowVoltageWarningLEDs() {
   }
 }
 
-void requestLEDFade(bool forwardReverse, bool footpad) {
+void requestDirectionFade(int oldDirection) {
   ledFadeActive = true;
-  fadeForwardReverse = forwardReverse;
-  fadeFootpad = footpad;
+  fadingDirection = oldDirection;
   ledFadeStartMS = millis();
+  lastKnightRiderUpdate = 0;
+  directionStripClearPending = true;
+}
+
+void applyDirectionFade() {
+  if (!ledFadeActive) return;
+
+  CRGB *newLeds = (direction == FORWARD) ? forward_leds : reverse_leds;
+  int newLedCount = (direction == FORWARD) ? lencoLED.numLedsForward : lencoLED.numLedsReverse;
+  uint8_t fadeInAmount = (uint8_t)constrain(
+      (int)map(millis() - ledFadeStartMS, 0, DIRECTION_FADE_DURATION_MS, 20, 255),
+      20,
+      255);
+
+  for (int i = 0; i < newLedCount; i++) {
+    newLeds[i].nscale8_video(fadeInAmount);
+  }
+}
+
+void clearActiveRideStrip() {
+  if (!directionStripClearPending) return;
+
+  CRGB *leds = (direction == FORWARD) ? forward_leds : reverse_leds;
+  int ledCount = (direction == FORWARD) ? lencoLED.numLedsForward : lencoLED.numLedsReverse;
+  for (int i = 0; i < ledCount; i++) {
+    leds[i] = CRGB::Black;
+  }
+  directionStripClearPending = false;
 }
 
 void warningLEDs() {

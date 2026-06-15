@@ -17,6 +17,8 @@ static const uint8_t REFLOAT_REALTIME_MISSES_BEFORE_LEGACY = 5;
 // Refloat LCM poll response layout.
 #define LCM_POLL_STATE_IDX 3
 #define LCM_POLL_DUTY_PITCH_IDX 5
+#define LCM_POLL_ERPM_IDX 6
+#define LCM_POLL_VOLTAGE_IDX 10
 #define LCM_POLL_BRIGHTNESS_IDX 12
 
 // Legacy compact ALLDATA response layout.
@@ -25,6 +27,7 @@ static const uint8_t REFLOAT_REALTIME_MISSES_BEFORE_LEGACY = 5;
 #define ALLDATA_ADC2_IDX 13
 #define ALLDATA_VOLTAGE_IDX 23
 #define ALLDATA_ERPM_IDX 25
+#define ALLDATA_SPEED_IDX 27
 #define ALLDATA_CURRENT_IDX 31
 #define ALLDATA_DUTY_IDX 33
 #define ALLDATA_ROLL_IDX 8
@@ -88,7 +91,7 @@ public:
     unsigned long lastRealtimeMs = 0;
     unsigned long lastAllDataMs = 0;
 
-    Protocol protocol = PROTOCOL_UNKNOWN;
+    Protocol protocol = PROTOCOL_LEGACY_ALLDATA;
 
     void handleLcmPoll(uint8_t* data, uint8_t len) {
         if (len <= LCM_POLL_BRIGHTNESS_IDX) {
@@ -107,6 +110,11 @@ public:
         lcmState = stateByte & 0x0F;
         if (!hasRecentRealtimeData() && !hasRecentAllData()) {
             state = lcmState;
+            erpm = decodeInt16Scaled(data[LCM_POLL_ERPM_IDX], data[LCM_POLL_ERPM_IDX + 1], 1.0f);
+            voltage = decodeInt16Scaled(data[LCM_POLL_VOLTAGE_IDX], data[LCM_POLL_VOLTAGE_IDX + 1], 10.0f);
+            if (isRunningCompatState(lcmState)) {
+                dutyCycle = constrain(data[LCM_POLL_DUTY_PITCH_IDX] / 100.0f, 0.0f, 1.0f);
+            }
         }
         handtest = (stateByte & 0x80) != 0;
         if (!isRunningCompatState(lcmState) && !hasRecentRealtimeData()) {
@@ -129,6 +137,7 @@ public:
         adcRight = data[ALLDATA_ADC2_IDX] / 50.0f;
         voltage = decodeInt16Scaled(data[ALLDATA_VOLTAGE_IDX], data[ALLDATA_VOLTAGE_IDX + 1], 10.0f);
         erpm = int16_t((uint16_t(data[ALLDATA_ERPM_IDX]) << 8) | data[ALLDATA_ERPM_IDX + 1]);
+        speedKmh = abs(decodeInt16Scaled(data[ALLDATA_SPEED_IDX], data[ALLDATA_SPEED_IDX + 1], 10.0f) * 3.6f);
         currentIn = decodeInt16Scaled(data[ALLDATA_CURRENT_IDX], data[ALLDATA_CURRENT_IDX + 1], 10.0f);
         dutyCycle = constrain(abs(int(data[ALLDATA_DUTY_IDX]) - 128) / 100.0f, 0.0f, 1.0f);
         roll = decodeInt16Scaled(data[ALLDATA_ROLL_IDX], data[ALLDATA_ROLL_IDX + 1], 10.0f);
@@ -185,17 +194,6 @@ public:
     }
 
     void requestTelemetry(ESC& esc) {
-        if (protocol != PROTOCOL_LEGACY_ALLDATA) {
-            esc.sendRefloatRealtimeRequest(realtimeMask1());
-            lastRealtimeRequestMs = millis();
-            if (protocol == PROTOCOL_UNKNOWN) {
-                if (realtimeMisses < 255) realtimeMisses++;
-                if (realtimeMisses >= REFLOAT_REALTIME_MISSES_BEFORE_LEGACY) {
-                    protocol = PROTOCOL_LEGACY_ALLDATA;
-                }
-            }
-            return;
-        }
         esc.sendRefloatAllDataRequest();
     }
 
