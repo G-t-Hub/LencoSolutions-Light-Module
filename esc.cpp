@@ -3,7 +3,7 @@
 #include <SPI.h>
 #include "mcp2515.h"
 
-#define ESC_CAN_ID 104
+#define ESC_CAN_ID 107
 #define NODE_CAN_ID 36 // Your device's CAN ID
 
 // Relevant CAN command IDs
@@ -118,6 +118,14 @@ class ESC {
       data[6] = (uint8_t)(mask1 >> 8);
       data[7] = (uint8_t)(mask1 & 0xFF);
       sendCanBuffer(data, sizeof(data), 0);
+    }
+
+    void sendLencoLedReadResponse(const uint8_t* data, uint8_t len) {
+      struct can_frame msg;
+      msg.can_id = CAN_EFF_FLAG | ((uint32_t)243 << 8) | NODE_CAN_ID;
+      msg.can_dlc = min(len, (uint8_t)8);
+      memcpy(msg.data, data, msg.can_dlc);
+      mcp2515.sendMessage(&msg);
     }
 
     // Called periodically (e.g. every 100ms)

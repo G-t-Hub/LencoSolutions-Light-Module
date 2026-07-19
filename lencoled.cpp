@@ -230,6 +230,9 @@ public:
             case 116: // CMD_SET_TELEMETRY_RANGE
                 handleTelemetryRangeCommand(data, len);
                 break;
+            case 117: // CMD_READ_ARDUINO_EEPROM
+                sendRawEepromChunk(data, len, esc);
+                break;
             case 120: // CMD_ENTER_OTA_BOOTLOADER
                 EEPROM.update(EEPROM_OTA_REQUEST_ADDR, OTA_REQUEST_MAGIC);
                 wdt_enable(WDTO_15MS);
@@ -242,6 +245,21 @@ private:
     static uint16_t decodeEncodedDelay(uint8_t hiEncoded, uint8_t loEncoded) {
         if (hiEncoded == 0 || loEncoded == 0) return 0;
         return (uint16_t(uint8_t(hiEncoded - 1)) << 8) | uint8_t(loEncoded - 1);
+    }
+
+    void sendRawEepromChunk(uint8_t* data, uint8_t len, ESC& esc) {
+        if (len < 3) return;
+        uint8_t addr = data[1];
+        uint8_t count = min(data[2], (uint8_t)2);
+        if (addr >= EEPROM_SIZE || count < 1) return;
+        if (addr + count > EEPROM_SIZE) count = EEPROM_SIZE - addr;
+        uint8_t payload[7] = {218, uint8_t(addr + 1), uint8_t(count + 1), 1, 1, 1, 1};
+        for (uint8_t i = 0; i < count; i++) {
+            uint8_t value = EEPROM.read(addr + i);
+            payload[3 + i * 2] = (value >> 4) + 1;
+            payload[4 + i * 2] = (value & 0x0F) + 1;
+        }
+        esc.sendLencoLedReadResponse(payload, 3 + count * 2);
     }
 
     bool validFootpadSettings(uint8_t width, uint16_t delay, uint8_t fade) const {

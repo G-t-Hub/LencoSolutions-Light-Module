@@ -30,7 +30,7 @@ const uint8_t MAX_LEDS_PER_STRIP = LencoLED::MAX_LED_COUNT;
 #define BRAKE_OFF_DEBOUNCE_COUNT 3
 #define MOVING_ERPM_THRESHOLD 200
 #define DIRECTION_ERPM_THRESHOLD 20
-#define DIRECTION_FADE_DURATION_MS 250
+#define DIRECTION_FADE_DURATION_MS 500
 
 CRGB forward_leds[MAX_LEDS_PER_STRIP];
 CRGB reverse_leds[MAX_LEDS_PER_STRIP];
@@ -81,6 +81,8 @@ bool startupAnimationComplete = false;
 int direction = FORWARD;
 int previousDirection = FORWARD;
 int previousErpm = 0;
+int rideRiderPosition = 0;
+int rideRiderDirection = 1;
 
 bool ledFadeActive = false;
 unsigned long ledFadeStartMS = 0;
@@ -124,6 +126,7 @@ void requestDirectionFade(int oldDirection);
 void applyDirectionFade();
 void clearActiveRideStrip();
 void renderRearLights();
+void resetRideKnightRider();
 void clearInactiveLEDs();
 
 void setup() {
@@ -430,9 +433,6 @@ void renderRearLights() {
 }
 
 void knightRider(int red, int green, int blue, int ridingWidth) {
-  static int pos = 0;
-  static int animDir = 1;
-
   CRGB *leds = (direction == FORWARD) ? forward_leds : reverse_leds;
   int ledCount = (direction == FORWARD) ? lencoLED.numLedsForward : lencoLED.numLedsReverse;
   ridingWidth = constrain(ridingWidth, 1, ledCount);
@@ -449,10 +449,10 @@ void knightRider(int red, int green, int blue, int ridingWidth) {
       leds[i].fadeToBlackBy(60);
     }
 
-    pos = constrain(pos, 0, travel);
+    rideRiderPosition = constrain(rideRiderPosition, 0, travel);
 
     for (int j = -2; j < ridingWidth + 2; j++) {
-      int idx = pos + j;
+      int idx = rideRiderPosition + j;
       if (idx >= 0 && idx < ledCount) {
         int fadeFactor = (j < 0 || j >= ridingWidth) ? 30 : 100;
         leds[idx].setRGB(
@@ -463,10 +463,10 @@ void knightRider(int red, int green, int blue, int ridingWidth) {
       }
     }
 
-    pos += animDir;
+    rideRiderPosition += rideRiderDirection;
 
-    if (pos >= travel) animDir = -1;
-    else if (pos <= 0)  animDir =  1;
+    if (rideRiderPosition >= travel) rideRiderDirection = -1;
+    else if (rideRiderPosition <= 0)  rideRiderDirection =  1;
 
     lastKnightRiderUpdate = millis();
   }
@@ -589,6 +589,7 @@ void requestDirectionFade(int oldDirection) {
   ledFadeStartMS = millis();
   lastKnightRiderUpdate = 0;
   directionStripClearPending = true;
+  resetRideKnightRider();
 }
 
 void applyDirectionFade() {
@@ -597,8 +598,8 @@ void applyDirectionFade() {
   CRGB *newLeds = (direction == FORWARD) ? forward_leds : reverse_leds;
   int newLedCount = (direction == FORWARD) ? lencoLED.numLedsForward : lencoLED.numLedsReverse;
   uint8_t fadeInAmount = (uint8_t)constrain(
-      (int)map(millis() - ledFadeStartMS, 0, DIRECTION_FADE_DURATION_MS, 20, 255),
-      20,
+      (int)map(millis() - ledFadeStartMS, 0, DIRECTION_FADE_DURATION_MS, 0, 255),
+      0,
       255);
 
   for (int i = 0; i < newLedCount; i++) {
@@ -615,6 +616,11 @@ void clearActiveRideStrip() {
     leds[i] = CRGB::Black;
   }
   directionStripClearPending = false;
+}
+
+void resetRideKnightRider() {
+  rideRiderPosition = 0;
+  rideRiderDirection = 1;
 }
 
 void warningLEDs() {
