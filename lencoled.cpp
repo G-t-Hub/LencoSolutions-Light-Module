@@ -4,12 +4,15 @@
 #include <avr/wdt.h>
 
 const char LENCOLED_FIRMWARE_MARKER[] PROGMEM __attribute__((used)) = "LCOTA1";
-const char LENCOLED_FIRMWARE_VERSION[] PROGMEM __attribute__((used)) = "LencoLED Arduino v3.4";
+#define LENCOLED_FIRMWARE_VERSION_MAJOR 3
+#define LENCOLED_FIRMWARE_VERSION_MINOR 5
+#define LENCOLED_FIRMWARE_VERSION_PATCH 0
+const char LENCOLED_FIRMWARE_VERSION[] PROGMEM __attribute__((used)) = "LencoLED Arduino v3.5";
 
 // CAN packet type used by VESC Express to send LencoLED config commands to this node
 #define CAN_PACKET_LENCOLED_CONFIG 240
 
-// EEPROM layout (86 bytes total)
+// EEPROM layout (87 bytes total)
 #define EEPROM_SIZE            87
 #define EEPROM_MAGIC           0xABD6
 #define EEPROM_MAGIC_ADDR      0  // uint16: EEPROM_MAGIC if initialized
@@ -233,6 +236,9 @@ public:
             case 117: // CMD_READ_ARDUINO_EEPROM
                 sendRawEepromChunk(data, len, esc);
                 break;
+            case 118: // CMD_READ_FIRMWARE_VERSION
+                sendFirmwareVersion(esc);
+                break;
             case 120: // CMD_ENTER_OTA_BOOTLOADER
                 EEPROM.update(EEPROM_OTA_REQUEST_ADDR, OTA_REQUEST_MAGIC);
                 wdt_enable(WDTO_15MS);
@@ -260,6 +266,16 @@ private:
             payload[4 + i * 2] = (value & 0x0F) + 1;
         }
         esc.sendLencoLedReadResponse(payload, 3 + count * 2);
+    }
+
+    void sendFirmwareVersion(ESC& esc) {
+        const uint8_t payload[4] = {
+            219,
+            LENCOLED_FIRMWARE_VERSION_MAJOR + 1,
+            LENCOLED_FIRMWARE_VERSION_MINOR + 1,
+            LENCOLED_FIRMWARE_VERSION_PATCH + 1
+        };
+        esc.sendLencoLedReadResponse(payload, sizeof(payload));
     }
 
     bool validFootpadSettings(uint8_t width, uint16_t delay, uint8_t fade) const {
